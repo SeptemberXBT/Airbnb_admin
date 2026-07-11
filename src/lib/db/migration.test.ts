@@ -1,0 +1,41 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+describe("initial database migration", () => {
+  it("defines all operational tables, constraints, indexes, and row security", async () => {
+    let sql = "";
+    try {
+      sql = await readFile(
+        path.join(process.cwd(), "supabase/migrations/0001_initial.sql"),
+        "utf8",
+      );
+    } catch {
+      sql = "";
+    }
+
+    for (const table of [
+      "properties",
+      "listings",
+      "external_calendar_events",
+      "local_calendar_entries",
+      "operation_overrides",
+      "cleaning_tasks",
+      "sync_runs",
+      "audit_log",
+    ]) {
+      expect(sql).toMatch(new RegExp(`create table public\\.${table}`, "i"));
+      expect(sql).toMatch(new RegExp(`alter table public\\.${table} enable row level security`, "i"));
+    }
+    expect(sql).toMatch(/unique\s*\(listing_id, source_uid\)/i);
+    expect(sql).toMatch(/end_date > start_date/i);
+    expect(sql).toMatch(/Asia\/Kolkata/i);
+  });
+
+  it("preserves historical cleaning rows with an active-only uniqueness index", async () => {
+    const sql = await readFile(path.join(process.cwd(), "supabase/migrations/0002_cleaning_task_identity.sql"), "utf8");
+    expect(sql).toMatch(/create unique index cleaning_tasks_active_property_service_unique/i);
+    expect(sql).toMatch(/where archived_at is null/i);
+    expect(sql).not.toMatch(/add constraint cleaning_tasks_property_service_unique/i);
+  });
+});
