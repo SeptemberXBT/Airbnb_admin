@@ -60,6 +60,14 @@ export function createPostgresCleaningTaskStore(tx: postgres.TransactionSql): Cl
           expected_duration_minutes = case when public.cleaning_tasks.status = 'cleaning_now'
             then public.cleaning_tasks.expected_duration_minutes else excluded.expected_duration_minutes end,
           updated_at = now()
+        where public.cleaning_tasks.status <> 'cleaning_now' and (
+          public.cleaning_tasks.outgoing_entry_key is distinct from excluded.outgoing_entry_key
+          or public.cleaning_tasks.incoming_entry_key is distinct from excluded.incoming_entry_key
+          or public.cleaning_tasks.release_time is distinct from excluded.release_time
+          or public.cleaning_tasks.ready_deadline is distinct from excluded.ready_deadline
+          or public.cleaning_tasks.guest_arrival_time is distinct from excluded.guest_arrival_time
+          or public.cleaning_tasks.expected_duration_minutes is distinct from excluded.expected_duration_minutes
+        )
       `;
     },
   };
