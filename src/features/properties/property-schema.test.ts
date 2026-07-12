@@ -26,6 +26,17 @@ describe("property and listing validation", () => {
     expect(result?.data).not.toHaveProperty("defaultCheckoutTime");
   });
 
+  it("requires a stable request ID for property creation", async () => {
+    const subject = await loadSubject();
+    const base = {
+      name: "Garden Suite", displayName: "Garden Suite on Airbnb", timezone: "Asia/Kolkata",
+      defaultCleaningMinutes: 15, checkoutBufferMinutes: 5, checkinBufferMinutes: 5,
+      inboundIcalUrl: "https://www.airbnb.co.in/calendar/ical/123.ics?s=secret",
+    };
+    expect(subject?.createPropertyListingSchema.safeParse(base).success).toBe(false);
+    expect(subject?.createPropertyListingSchema.safeParse({ ...base, creationRequestId: "10000000-0000-4000-8000-000000000001" }).success).toBe(true);
+  });
+
   it("rejects invalid duration, timezone, buffers, and non-HTTPS feed values", async () => {
     const subject = await loadSubject();
     const result = subject?.propertyListingSchema.safeParse({

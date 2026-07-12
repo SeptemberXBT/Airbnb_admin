@@ -1,7 +1,7 @@
 import "server-only";
 import { getDb } from "@/lib/db/client";
 import { generatePublicToken, hashToken, sealSecret } from "@/lib/security/secrets";
-import type { PropertyListingInput } from "./property-schema";
+import type { CreatePropertyListingInput, PropertyListingInput } from "./property-schema";
 
 const UNIVERSAL_CHECKIN_TIME = "13:00";
 const UNIVERSAL_CHECKOUT_TIME = "11:00";
@@ -56,7 +56,7 @@ export async function listPropertiesForUser(userId: string): Promise<PropertySum
   }));
 }
 
-export async function createPropertyWithListing(input: PropertyListingInput, userId: string) {
+export async function createPropertyWithListing(input: CreatePropertyListingInput, userId: string) {
   const sql = getDb();
   const encryptionKey = process.env.ICAL_ENCRYPTION_KEY;
   if (!encryptionKey) throw new Error("ICAL_ENCRYPTION_KEY is not configured");
@@ -67,13 +67,31 @@ export async function createPropertyWithListing(input: PropertyListingInput, use
     const [property] = await tx<{ id: string }[]>`
       insert into public.properties (
         name, timezone, default_checkin_time, default_checkout_time,
-        default_cleaning_minutes, checkout_buffer_minutes, checkin_buffer_minutes
+        default_cleaning_minutes, checkout_buffer_minutes, checkin_buffer_minutes,
+        creation_request_id
       ) values (
         ${input.name}, ${input.timezone}, ${UNIVERSAL_CHECKIN_TIME}, ${UNIVERSAL_CHECKOUT_TIME},
-        ${input.defaultCleaningMinutes}, ${input.checkoutBufferMinutes}, ${input.checkinBufferMinutes}
-      ) returning id
+        ${input.defaultCleaningMinutes}, ${input.checkoutBufferMinutes}, ${input.checkinBufferMinutes},
+        ${input.creationRequestId}
+      ) on conflict (creation_request_id) where creation_request_id is not null do nothing
+      returning id
     `;
-    await tx`insert into public.property_members (property_id, user_id, role) values (${property.id}, ${userId}, 'owner')`;
+    if (!property) {
+      const [existing] = await tx<{ property_id: string; listing_id: string }[]>`
+        select p.id as property_id, l.id as listing_id
+        from public.properties p
+        join public.listings l on l.property_id = p.id and l.archived_at is null
+        where p.creation_request_id = ${input.creationRequestId}
+        order by l.created_at limit 1
+      `;
+      if (!existing) throw new Error("PROPERTY_RETRY_NOT_FOUND");
+      return { propertyId: existing.property_id, listingId: existing.listing_id, duplicate: true };
+    }
+    await tx`
+      insert into public.property_members (property_id, user_id, role)
+      values (${property.id}, ${userId}, 'owner')
+      on conflict (property_id, user_id) do update set role = 'owner'
+    `;
     const [listing] = await tx<{ id: string }[]>`
       insert into public.listings (
         property_id, display_name, inbound_ical_url_encrypted, outbound_token_hash
@@ -84,9 +102,9 @@ export async function createPropertyWithListing(input: PropertyListingInput, use
       insert into public.audit_log (property_id, actor_id, action, entity_type, entity_id, changes)
       values (${property.id}, ${userId}, 'created', 'property', ${property.id}, ${tx.json({ name: input.name, listingId: listing.id })})
     `;
-    return { propertyId: property.id, listingId: listing.id };
+    return { propertyId: property.id, listingId: listing.id, duplicate: false };
   });
-  return { ...result, publicToken };
+  return { ...result, publicToken: result.duplicate ? null : publicToken };
 }
 
 export async function updateProperty(input: PropertyListingInput & { propertyId: string; listingId: string }, userId: string) {

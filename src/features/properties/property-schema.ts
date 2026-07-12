@@ -16,6 +16,12 @@ export const propertyListingSchema = z.object({
 
 export type PropertyListingInput = z.infer<typeof propertyListingSchema>;
 
+export const createPropertyListingSchema = propertyListingSchema.extend({
+  creationRequestId: z.uuid(),
+});
+
+export type CreatePropertyListingInput = z.infer<typeof createPropertyListingSchema>;
+
 type ListingRecord = {
   id: string;
   property_id: string;

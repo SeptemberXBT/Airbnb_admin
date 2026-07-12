@@ -1,4 +1,4 @@
-import { propertyListingSchema } from "@/features/properties/property-schema";
+import { createPropertyListingSchema, propertyListingSchema } from "@/features/properties/property-schema";
 import { createPropertyWithListing, listPropertiesForUser, updateProperty } from "@/features/properties/property-service";
 import { requireUser } from "@/lib/auth/require-user";
 import { NextResponse } from "next/server";
@@ -23,14 +23,15 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const user = await requireUser();
-    const input = propertyListingSchema.parse(await request.json());
+    const input = createPropertyListingSchema.parse(await request.json());
     const created = await createPropertyWithListing(input, user.id);
     const appUrl = process.env.APP_URL ?? new URL(request.url).origin;
     return NextResponse.json({
       propertyId: created.propertyId,
       listingId: created.listingId,
-      outboundUrl: `${appUrl}/api/ical/${created.publicToken}.ics`,
-    }, { status: 201 });
+      outboundUrl: created.publicToken ? `${appUrl}/api/ical/${created.publicToken}.ics` : null,
+      duplicate: created.duplicate,
+    }, { status: created.duplicate ? 200 : 201 });
   } catch (error) {
     if (error instanceof z.ZodError) return NextResponse.json({ error: "invalid_property", fields: z.flattenError(error).fieldErrors }, { status: 400 });
     const safe = safeError(error);
