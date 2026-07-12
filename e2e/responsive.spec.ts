@@ -91,6 +91,30 @@ test("calendar scrolls through dates and opens daily vacancy names", async ({ pa
   await expect(page.getByRole("button", { name: "30d" })).toHaveClass(/is-active/);
 });
 
+test("rapid mobile calendar navigation keeps the page responsive", async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.history.replaceState.bind(window.history);
+    let calls = 0;
+    Object.defineProperty(window, "__calendarHistoryUpdates", { get: () => calls });
+    window.history.replaceState = (...args) => {
+      calls += 1;
+      return original(...args);
+    };
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/calendar?zoom=14");
+  const next = page.getByRole("button", { name: "Next dates" });
+  const previous = page.getByRole("button", { name: "Previous dates" });
+  for (let index = 0; index < 6; index += 1) await next.click();
+  for (let index = 0; index < 6; index += 1) await previous.click();
+  await page.waitForTimeout(500);
+
+  await expect(page.getByRole("heading", { name: "Calendar" })).toBeVisible();
+  await expect(page.getByLabel("Infinite property calendar")).toBeVisible();
+  const historyUpdates = await page.evaluate(() => Number((window as Window & { __calendarHistoryUpdates?: number }).__calendarHistoryUpdates ?? 0));
+  expect(historyUpdates).toBeLessThanOrEqual(3);
+});
+
 test("today queue remains dense and readable on desktop", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/today");

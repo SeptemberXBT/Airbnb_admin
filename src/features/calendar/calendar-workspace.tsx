@@ -53,6 +53,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const scroller = useRef<HTMLElement>(null);
   const loadingRef = useRef(false);
   const mutationRef = useRef(false);
+  const locationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [properties, setProperties] = useState(initialProperties);
   const [windowStart, setWindowStart] = useState(startDate);
   const [dayCount, setDayCount] = useState(CHUNK_DAYS);
@@ -84,7 +85,10 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
       const cell = scroller.current?.querySelector<HTMLElement>(".date-strip > div");
       if (cell && scroller.current) scroller.current.scrollLeft = 7 * cell.getBoundingClientRect().width;
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (locationTimerRef.current) clearTimeout(locationTimerRef.current);
+    };
   }, []);
 
   function cellWidth() {
@@ -92,11 +96,24 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   }
 
   function updateLocation(date: string, nextZoom = calendarZoom) {
+    if (locationTimerRef.current) {
+      clearTimeout(locationTimerRef.current);
+      locationTimerRef.current = null;
+    }
     setVisibleDate(date);
     const url = new URL(window.location.href);
+    if (url.searchParams.get("start") === date && url.searchParams.get("zoom") === String(nextZoom)) return;
     url.searchParams.set("start", date);
     url.searchParams.set("zoom", String(nextZoom));
     window.history.replaceState(null, "", url);
+  }
+
+  function scheduleLocationUpdate(date: string) {
+    if (locationTimerRef.current) clearTimeout(locationTimerRef.current);
+    locationTimerRef.current = setTimeout(() => {
+      locationTimerRef.current = null;
+      updateLocation(date);
+    }, 160);
   }
 
   async function fetchWindow(start: string) {
@@ -169,7 +186,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
     if (!element) return;
     const width = cellWidth();
     const index = Math.max(0, Math.min(dayCount - 1, Math.floor(element.scrollLeft / width)));
-    updateLocation(dateString(addDays(parseISO(windowStart), index)));
+    scheduleLocationUpdate(dateString(addDays(parseISO(windowStart), index)));
     if (element.scrollLeft < width * 4) void extendWindow("previous");
     else if (element.scrollWidth - element.clientWidth - element.scrollLeft < width * 4) void extendWindow("next");
   }

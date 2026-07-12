@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarProperty } from "./calendar-types";
@@ -25,7 +25,32 @@ describe("CalendarWorkspace mutation feedback", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("collapses rapid calendar scrolling into one browser URL update", () => {
+    vi.useFakeTimers();
+    const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 58, height: 58, top: 0, right: 58, bottom: 58, left: 0, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    render(<CalendarWorkspace properties={[property]} startDate="2026-07-05" anchorDate="2026-07-12" zoom={14} demoMode={false} />);
+    const calendar = screen.getByLabelText("Infinite property calendar");
+    Object.defineProperties(calendar, {
+      clientWidth: { configurable: true, value: 390 },
+      scrollWidth: { configurable: true, value: 2200 },
+    });
+
+    for (let offset = 580; offset < 640; offset += 3) {
+      Object.defineProperty(calendar, "scrollLeft", { configurable: true, value: offset, writable: true });
+      fireEvent.scroll(calendar);
+    }
+
+    expect(replaceState).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(200));
+    expect(replaceState).toHaveBeenCalledTimes(1);
   });
 
   it("disables repeated save and closes the editor after the focused calendar reload", async () => {
