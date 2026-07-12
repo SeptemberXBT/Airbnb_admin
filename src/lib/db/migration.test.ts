@@ -38,4 +38,11 @@ describe("initial database migration", () => {
     expect(sql).toMatch(/where archived_at is null/i);
     expect(sql).not.toMatch(/add constraint cleaning_tasks_property_service_unique/i);
   });
+
+  it("normalizes and enforces universal arrival and departure times", async () => {
+    const sql = await readFile(path.join(process.cwd(), "supabase/migrations/0003_universal_operation_times.sql"), "utf8");
+    expect(sql).toMatch(/update public\.properties[\s\S]*default_checkin_time = '13:00'[\s\S]*default_checkout_time = '11:00'/i);
+    expect(sql).toMatch(/check \(default_checkin_time = '13:00'::time\)/i);
+    expect(sql).toMatch(/check \(default_checkout_time = '11:00'::time\)/i);
+  });
 });

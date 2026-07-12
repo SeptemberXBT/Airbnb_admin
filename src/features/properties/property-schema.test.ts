@@ -9,14 +9,12 @@ async function loadSubject() {
 }
 
 describe("property and listing validation", () => {
-  it("accepts India-time defaults and a private HTTPS iCal URL", async () => {
+  it("accepts universal operating defaults without property-level arrival times", async () => {
     const subject = await loadSubject();
     const result = subject?.propertyListingSchema.safeParse({
       name: "Garden Suite",
       displayName: "Garden Suite on Airbnb",
       timezone: "Asia/Kolkata",
-      defaultCheckinTime: "13:00",
-      defaultCheckoutTime: "11:00",
       defaultCleaningMinutes: 15,
       checkoutBufferMinutes: 5,
       checkinBufferMinutes: 5,
@@ -24,16 +22,16 @@ describe("property and listing validation", () => {
     });
 
     expect(result?.success).toBe(true);
+    expect(result?.data).not.toHaveProperty("defaultCheckinTime");
+    expect(result?.data).not.toHaveProperty("defaultCheckoutTime");
   });
 
-  it("rejects invalid time, duration, and non-HTTPS feed values", async () => {
+  it("rejects invalid duration, timezone, buffers, and non-HTTPS feed values", async () => {
     const subject = await loadSubject();
     const result = subject?.propertyListingSchema.safeParse({
       name: "Room",
       displayName: "Room",
       timezone: "UTC",
-      defaultCheckinTime: "25:90",
-      defaultCheckoutTime: "eleven",
       defaultCleaningMinutes: 0,
       checkoutBufferMinutes: -1,
       checkinBufferMinutes: 999,
@@ -47,7 +45,7 @@ describe("property and listing validation", () => {
     const subject = await loadSubject();
     const result = subject?.propertyListingSchema.safeParse({
       name: "Garden Suite", displayName: "Garden Suite", timezone: "Asia/Kolkata",
-      defaultCheckinTime: "13:00", defaultCheckoutTime: "11:00", defaultCleaningMinutes: 15,
+      defaultCleaningMinutes: 15,
       checkoutBufferMinutes: 5, checkinBufferMinutes: 5,
       inboundIcalUrl: "https://example.com/calendar/private.ics",
     });

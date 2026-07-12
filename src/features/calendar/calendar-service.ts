@@ -2,6 +2,7 @@ import "server-only";
 import { getDb } from "@/lib/db/client";
 import { demoCalendar } from "./demo-calendar";
 import type { CalendarEntry, CalendarProperty } from "./calendar-types";
+import { calculateVacancy } from "./vacancy";
 
 export async function getCalendarData(userId: string, startDate: string, days: number): Promise<CalendarProperty[]> {
   if (process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production") return demoCalendar(startDate);
@@ -81,4 +82,13 @@ export async function getCalendarData(userId: string, startDate: string, days: n
     isStale: !property.last_sync_at || Date.now() - new Date(property.last_sync_at).getTime() > 30 * 60 * 1000,
     entries: entriesByProperty.get(property.id) ?? [],
   }));
+}
+
+export async function getVacancySummaryForUser(userId: string, startDate: string, endDate: string) {
+  calculateVacancy([], startDate, endDate);
+  const start = new Date(`${startDate}T12:00:00Z`);
+  const end = new Date(`${endDate}T12:00:00Z`);
+  const days = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const properties = await getCalendarData(userId, startDate, days);
+  return calculateVacancy(properties, startDate, endDate);
 }

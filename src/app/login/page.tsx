@@ -1,4 +1,4 @@
-import { Sparkles } from "lucide-react";
+import { House } from "lucide-react";
 import { login } from "./actions";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
@@ -6,7 +6,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="auth-page">
       <section className="auth-identity">
-        <span className="brand"><span className="brand__mark"><Sparkles size={18} /></span><span><strong>Haven</strong><small>Operations</small></span></span>
+        <span className="brand"><span className="brand__mark"><House size={18} /></span><span><strong>Noir Haus</strong><small>Admin</small></span></span>
         <div><h1>Every stay, turnover, and arrival in one view.</h1><p>Private operations workspace for your short-term rental team.</p></div>
       </section>
       <section className="auth-panel">

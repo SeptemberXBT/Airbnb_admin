@@ -7,8 +7,6 @@ import type { PropertySummary } from "./property-service";
 
 const defaults = {
   timezone: "Asia/Kolkata",
-  defaultCheckinTime: "13:00",
-  defaultCheckoutTime: "11:00",
   defaultCleaningMinutes: 15,
   checkoutBufferMinutes: 5,
   checkinBufferMinutes: 5,
@@ -20,8 +18,6 @@ function formPayload(form: HTMLFormElement) {
     name: String(data.get("name")),
     displayName: String(data.get("displayName")),
     timezone: "Asia/Kolkata",
-    defaultCheckinTime: String(data.get("defaultCheckinTime")),
-    defaultCheckoutTime: String(data.get("defaultCheckoutTime")),
     defaultCleaningMinutes: Number(data.get("defaultCleaningMinutes")),
     checkoutBufferMinutes: Number(data.get("checkoutBufferMinutes")),
     checkinBufferMinutes: Number(data.get("checkinBufferMinutes")),
@@ -35,8 +31,7 @@ function PropertyFields({ property }: { property?: PropertySummary }) {
       <div className="field"><label>Property name</label><input name="name" defaultValue={property?.name} required minLength={2} /></div>
       <div className="field"><label>Airbnb listing name</label><input name="displayName" defaultValue={property?.listingName} required minLength={2} /></div>
       <div className="field field--wide"><label>Private Airbnb iCal URL</label><input name="inboundIcalUrl" type="url" inputMode="url" placeholder={property ? "Paste a new URL to replace the stored feed" : "https://www.airbnb.com/calendar/ical/..."} required /></div>
-      <div className="field"><label>Check-in</label><input name="defaultCheckinTime" type="time" defaultValue={property?.defaultCheckinTime ?? defaults.defaultCheckinTime} required /></div>
-      <div className="field"><label>Checkout</label><input name="defaultCheckoutTime" type="time" defaultValue={property?.defaultCheckoutTime ?? defaults.defaultCheckoutTime} required /></div>
+      <div className="field field--wide"><label>Standard guest times</label><div className="fixed-defaults"><span>Checkout <strong>11:00 AM</strong></span><span>Check-in <strong>1:00 PM</strong></span></div></div>
       <div className="field"><label>Cleaning minutes</label><input name="defaultCleaningMinutes" type="number" min="5" max="480" defaultValue={property?.defaultCleaningMinutes ?? defaults.defaultCleaningMinutes} required /></div>
       <div className="field"><label>Checkout buffer</label><input name="checkoutBufferMinutes" type="number" min="0" max="120" defaultValue={defaults.checkoutBufferMinutes} required /></div>
       <div className="field"><label>Check-in buffer</label><input name="checkinBufferMinutes" type="number" min="0" max="120" defaultValue={defaults.checkinBufferMinutes} required /></div>

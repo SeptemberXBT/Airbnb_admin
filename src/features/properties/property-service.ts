@@ -3,6 +3,9 @@ import { getDb } from "@/lib/db/client";
 import { generatePublicToken, hashToken, sealSecret } from "@/lib/security/secrets";
 import type { PropertyListingInput } from "./property-schema";
 
+const UNIVERSAL_CHECKIN_TIME = "13:00";
+const UNIVERSAL_CHECKOUT_TIME = "11:00";
+
 export type PropertySummary = {
   id: string;
   name: string;
@@ -66,7 +69,7 @@ export async function createPropertyWithListing(input: PropertyListingInput, use
         name, timezone, default_checkin_time, default_checkout_time,
         default_cleaning_minutes, checkout_buffer_minutes, checkin_buffer_minutes
       ) values (
-        ${input.name}, ${input.timezone}, ${input.defaultCheckinTime}, ${input.defaultCheckoutTime},
+        ${input.name}, ${input.timezone}, ${UNIVERSAL_CHECKIN_TIME}, ${UNIVERSAL_CHECKOUT_TIME},
         ${input.defaultCleaningMinutes}, ${input.checkoutBufferMinutes}, ${input.checkinBufferMinutes}
       ) returning id
     `;
@@ -95,7 +98,7 @@ export async function updateProperty(input: PropertyListingInput & { propertyId:
     if (!allowed) throw new Error("FORBIDDEN");
     await tx`
       update public.properties set name = ${input.name}, timezone = ${input.timezone},
-        default_checkin_time = ${input.defaultCheckinTime}, default_checkout_time = ${input.defaultCheckoutTime},
+        default_checkin_time = ${UNIVERSAL_CHECKIN_TIME}, default_checkout_time = ${UNIVERSAL_CHECKOUT_TIME},
         default_cleaning_minutes = ${input.defaultCleaningMinutes}, checkout_buffer_minutes = ${input.checkoutBufferMinutes},
         checkin_buffer_minutes = ${input.checkinBufferMinutes}, updated_at = now()
       where id = ${input.propertyId}

@@ -36,6 +36,16 @@ describe("single-team cleaning scheduler", () => {
     expect(schedule.map((task) => task.id)).toEqual(["a", "c", "b"]);
   });
 
+  it("cleans released rooms instead of waiting for a more urgent late checkout", () => {
+    const schedule = buildCleaningSchedule([
+      candidate("late", { releaseTime: at("12:00"), readyDeadline: at("12:30"), guestArrivalTime: at("12:35") }),
+      candidate("available", { releaseTime: at("11:00"), readyDeadline: at("13:00"), guestArrivalTime: at("13:05") }),
+    ], at("11:05"));
+    expect(schedule.map((task) => task.id)).toEqual(["available", "late"]);
+    expect(schedule[0].plannedStart?.toISOString()).toBe(at("11:05").toISOString());
+    expect(schedule[1].plannedStart?.toISOString()).toBe(at("12:00").toISOString());
+  });
+
   it("pins cleaning now and extends its prediction when duration changes", () => {
     const running = candidate("running", { status: "cleaning_now", actualStart: at("11:10"), durationMinutes: 30 });
     const next = candidate("next");
@@ -52,7 +62,7 @@ describe("single-team cleaning scheduler", () => {
       candidate("vacant", { releaseTime: at("08:00"), readyDeadline: at("11:55") }),
       candidate("no-arrival", { readyDeadline: at("17:00"), guestArrivalTime: null }),
     ], at("11:05"));
-    expect(schedule.map((task) => task.id)).toEqual(["vacant", "delayed", "late-checkout", "no-arrival"]);
+    expect(schedule.map((task) => task.id)).toEqual(["vacant", "no-arrival", "delayed", "late-checkout"]);
     expect(schedule.find((task) => task.id === "late-checkout")?.warningLevel).toBe("waiting");
     expect(schedule.find((task) => task.id === "no-arrival")?.warningLevel).toBe("safe");
   });

@@ -1,12 +1,14 @@
 import "server-only";
 import { getDb } from "@/lib/db/client";
-import { addMinutes } from "date-fns";
+import { addMinutes, subMinutes } from "date-fns";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { deriveTurnovers, type TurnoverProperty, type TurnoverReservation } from "./derive-turnovers";
 import { buildCleaningSchedule, type CleaningCandidate, type CleaningStatus, type WarningLevel } from "./scheduler";
 
 export type CleaningTaskView = {
   id: string; propertyId: string; propertyName: string; serviceDate: string;
   outgoingEntryKey: string | null; incomingEntryKey: string | null;
+  checkoutTime: string; checkinTime: string | null;
   releaseTime: string; readyDeadline: string; guestArrivalTime: string | null;
   plannedStart: string | null; plannedEnd: string | null; durationMinutes: number;
   status: CleaningStatus; warningLevel: WarningLevel; actualStart: string | null;
@@ -15,16 +17,19 @@ export type CleaningTaskView = {
 
 function demoQueue(serviceDate: string, now: Date): CleaningTaskView[] {
   const names = ["Courtyard Studio", "Mango Room", "Terrace Suite", "Garden Annex", "Library Loft"];
+  const checkout = fromZonedTime(`${serviceDate}T11:00:00`, "Asia/Kolkata");
+  const checkin = fromZonedTime(`${serviceDate}T13:00:00`, "Asia/Kolkata");
+  const release = addMinutes(checkout, 5);
   const candidates: CleaningCandidate[] = names.map((name, index) => ({
     id: `demo-clean-${index}`, propertyId: `demo-property-${index}`, propertyName: name,
-    releaseTime: addMinutes(now, index === 0 ? -10 : 0), readyDeadline: addMinutes(now, 50),
-    guestArrivalTime: addMinutes(now, 55), durationMinutes: index === 0 ? 20 : 15,
-    status: index === 0 ? "cleaning_now" : "queued", actualStart: index === 0 ? addMinutes(now, -8) : null,
+    releaseTime: release, readyDeadline: addMinutes(checkin, -5), guestArrivalTime: checkin,
+    durationMinutes: index === 0 ? 20 : 15, status: "queued", actualStart: null,
     actualEnd: null, delayMinutes: 0,
   }));
   return buildCleaningSchedule(candidates, now).map((task) => ({
     id: task.id, propertyId: task.propertyId, propertyName: task.propertyName, serviceDate,
-    outgoingEntryKey: null, incomingEntryKey: null, releaseTime: task.releaseTime.toISOString(),
+    outgoingEntryKey: null, incomingEntryKey: null, checkoutTime: "11:00", checkinTime: "13:00",
+    releaseTime: task.releaseTime.toISOString(),
     readyDeadline: task.readyDeadline.toISOString(), guestArrivalTime: task.guestArrivalTime?.toISOString() ?? null,
     plannedStart: task.plannedStart?.toISOString() ?? null, plannedEnd: task.plannedEnd?.toISOString() ?? null,
     durationMinutes: task.durationMinutes, status: task.status, warningLevel: task.warningLevel,
@@ -133,10 +138,12 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     id: string; property_id: string; property_name: string; outgoing_entry_key: string | null; incoming_entry_key: string | null;
     release_time: string; ready_deadline: string; guest_arrival_time: string | null; expected_duration_minutes: number;
     status: CleaningStatus; actual_start: string | null; actual_end: string | null; delay_minutes: number;
+    checkout_buffer_minutes: number;
   }[]>`
     select t.id, t.property_id, p.name as property_name, t.outgoing_entry_key, t.incoming_entry_key,
       t.release_time::text, t.ready_deadline::text, t.guest_arrival_time::text,
-      t.expected_duration_minutes, t.status, t.actual_start::text, t.actual_end::text, t.delay_minutes
+      t.expected_duration_minutes, t.status, t.actual_start::text, t.actual_end::text, t.delay_minutes,
+      p.checkout_buffer_minutes
     from public.cleaning_tasks t join public.properties p on p.id = t.property_id
     join public.property_members pm on pm.property_id = p.id and pm.user_id = ${userId}
     where t.service_date = ${serviceDate} and t.archived_at is null
@@ -159,6 +166,8 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     id: task.id, propertyId: task.propertyId, propertyName: task.propertyName, serviceDate,
     outgoingEntryKey: sourceById.get(task.id)?.outgoing_entry_key ?? null,
     incomingEntryKey: sourceById.get(task.id)?.incoming_entry_key ?? null,
+    checkoutTime: formatInTimeZone(subMinutes(task.releaseTime, sourceById.get(task.id)?.checkout_buffer_minutes ?? 0), "Asia/Kolkata", "HH:mm"),
+    checkinTime: task.guestArrivalTime ? formatInTimeZone(task.guestArrivalTime, "Asia/Kolkata", "HH:mm") : null,
     releaseTime: task.releaseTime.toISOString(), readyDeadline: task.readyDeadline.toISOString(),
     guestArrivalTime: task.guestArrivalTime?.toISOString() ?? null,
     plannedStart: task.plannedStart?.toISOString() ?? null, plannedEnd: task.plannedEnd?.toISOString() ?? null,
