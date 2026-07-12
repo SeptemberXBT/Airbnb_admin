@@ -117,7 +117,7 @@ export function TodayQueue({ tasks, demoMode, serviceDate, dateLabel, clock }: {
         delayMinutes: action === "delay" ? Number(values.delayMinutes ?? item.delayMinutes) : item.delayMinutes,
         durationMinutes: action === "edit" ? Number(values.durationMinutes ?? item.durationMinutes) : item.durationMinutes,
         checkoutTime: action === "edit" ? String(values.expectedCheckoutTime ?? item.checkoutTime) : item.checkoutTime,
-        checkinTime: action === "edit" ? String(values.expectedCheckinTime ?? item.checkinTime) : item.checkinTime,
+        checkinTime: action === "edit" ? values.expectedCheckinTime === undefined ? item.checkinTime : String(values.expectedCheckinTime) : item.checkinTime,
       }));
       setMessage("Queue updated.");
       router.refresh();

@@ -49,6 +49,16 @@ describe("TodayQueue live actions", () => {
     expect(screen.getByRole("button", { name: "Ready" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /show completed and skipped/i })).not.toBeInTheDocument();
   });
+
+  it("keeps a missing arrival time empty after editing another field", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })));
+    render(<TodayQueue serviceDate="2026-07-12" demoMode={false} tasks={[task({ incomingEntryKey: null, checkinTime: null })]} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(screen.getByText("No arrival")).toBeVisible());
+    expect(screen.queryByText("Invalid Date")).not.toBeInTheDocument();
+  });
 });
 
 describe("TodayQueue caretaker export", () => {

@@ -1,6 +1,7 @@
 import { getCleaningQueue } from "@/features/cleaning/cleaning-service";
 import { TodayQueue } from "@/features/cleaning/today-queue";
 import { requireUser } from "@/lib/auth/require-user";
+import { sharedWorkspaceVersion } from "@/lib/shared-workspace-version";
 import { formatInTimeZone } from "date-fns-tz";
 
 export default async function TodayPage() {
@@ -8,7 +9,7 @@ export default async function TodayPage() {
   const now = new Date();
   const serviceDate = formatInTimeZone(now, "Asia/Kolkata", "yyyy-MM-dd");
   const tasks = await getCleaningQueue(user.id, serviceDate, now);
-  const queueVersion = tasks.map((task) => [task.id, task.status, task.actualStart, task.actualEnd, task.delayMinutes, task.durationMinutes].join(":" )).join("|");
+  const queueVersion = sharedWorkspaceVersion(tasks);
   return (
     <div className="workspace workspace--queue">
       <TodayQueue
