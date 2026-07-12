@@ -8,9 +8,11 @@ export default async function TodayPage() {
   const now = new Date();
   const serviceDate = formatInTimeZone(now, "Asia/Kolkata", "yyyy-MM-dd");
   const tasks = await getCleaningQueue(user.id, serviceDate, now);
+  const queueVersion = tasks.map((task) => [task.id, task.status, task.actualStart, task.actualEnd, task.delayMinutes, task.durationMinutes].join(":" )).join("|");
   return (
     <div className="workspace workspace--queue">
       <TodayQueue
+        key={queueVersion}
         tasks={tasks}
         serviceDate={serviceDate}
         dateLabel={formatInTimeZone(now, "Asia/Kolkata", "EEEE, d MMMM")}

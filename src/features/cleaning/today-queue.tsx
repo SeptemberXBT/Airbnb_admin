@@ -5,18 +5,20 @@ import { formatCaretakerPlan } from "./caretaker-export";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import {
   Check,
-  CheckCircle2,
   Clock3,
   Copy,
   Edit3,
   LoaderCircle,
+  Minus,
   Play,
+  Plus,
   SkipForward,
+  SquareCheckBig,
   TimerReset,
   TriangleAlert,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent, type MouseEvent } from "react";
+import { useState, type FormEvent, type MouseEvent } from "react";
 
 const zone = "Asia/Kolkata";
 const time = (value: string | null) => value ? formatInTimeZone(new Date(value), zone, "h:mm a") : "--";
@@ -51,8 +53,8 @@ function TaskCard({ task, demoMode, activeId, onAction }: {
   }
   return <article className={`cleaning-card ${running ? "cleaning-card--active" : ""} ${done ? "cleaning-card--done" : ""}`}>
     <div className="cleaning-card__top">
-      <div className="queue-position">{running ? <LoaderCircle className="spin" size={17} /> : done ? <CheckCircle2 size={17} /> : <span>{task.status === "skipped" ? "-" : ""}</span>}</div>
-      <div className="cleaning-title"><strong>{task.propertyName}</strong><span>{running ? "Cleaning now" : done ? "Room ready" : task.status === "skipped" ? "Skipped" : `Available ${time(task.releaseTime)}`}</span></div>
+      <div className="queue-position">{running ? <LoaderCircle className="spin" size={17} /> : done ? <SquareCheckBig aria-label="Completed" size={18} /> : <span>{task.status === "skipped" ? "-" : ""}</span>}</div>
+      <div className="cleaning-title"><strong>{task.propertyName}</strong><span>{running ? "Cleaning now" : done ? task.actualEnd ? `Completed at ${time(task.actualEnd)}` : "Room ready" : task.status === "skipped" ? "Skipped" : `Available ${time(task.releaseTime)}`}</span></div>
       <span className={`status status--${task.warningLevel}`} aria-label={`Schedule status: ${warningLabel[task.warningLevel]}`}>{task.warningLevel === "safe" ? <Check size={12} /> : task.warningLevel === "waiting" ? <Clock3 size={12} /> : <TriangleAlert size={12} />}{warningLabel[task.warningLevel]}</span>
     </div>
     <div className="cleaning-times">
@@ -63,7 +65,7 @@ function TaskCard({ task, demoMode, activeId, onAction }: {
       <div><span>Duration</span><strong>{task.durationMinutes} min</strong></div>
     </div>
     {!done && task.status !== "skipped" ? <div className="cleaning-actions">
-      {running ? <button className="quick-action quick-action--ready" disabled={activeId === task.id} onClick={() => onAction(task, "ready")}><CheckCircle2 size={18} /> Ready</button> : <button className="quick-action quick-action--start" disabled={activeId === task.id} onClick={() => onAction(task, "start")}><Play size={17} /> Start</button>}
+      {running ? <button className="quick-action quick-action--ready" disabled={activeId === task.id} onClick={() => onAction(task, "ready")}><SquareCheckBig size={18} /> Ready</button> : <button className="quick-action quick-action--start" disabled={activeId === task.id} onClick={() => onAction(task, "start")}><Play size={17} /> Start</button>}
       {!running ? <button className="quick-action" disabled={activeId === task.id} onClick={() => onAction(task, "delay", { delayMinutes: task.delayMinutes + 10 })}><TimerReset size={17} /> Delay</button> : null}
       {!running ? <button className="icon-button" title="Skip cleaning task" aria-label={`Skip ${task.propertyName}`} disabled={activeId === task.id} onClick={() => onAction(task, "skip")}><SkipForward size={17} /></button> : null}
       <details className="quick-editor"><summary className="icon-button" title="Edit times and duration" aria-label={`Edit ${task.propertyName} times`}><Edit3 size={17} /></summary><form onSubmit={edit}><div className="field"><label>Checkout</label><input type="time" name="expectedCheckoutTime" defaultValue={task.checkoutTime} /></div><div className="field"><label>Check-in</label><input type="time" name="expectedCheckinTime" defaultValue={task.checkinTime ?? ""} disabled={!task.incomingEntryKey} /></div><div className="field"><label>Minutes</label><input type="number" name="durationMinutes" min="5" max="480" defaultValue={task.durationMinutes} required /></div><button className="button button--quiet" type="button" onClick={resetTimes}>Use standard times</button><button className="button button--primary" type="submit" disabled={demoMode}>Apply</button></form></details>
@@ -86,32 +88,46 @@ export function TodayQueue({ tasks, demoMode, serviceDate, dateLabel, clock }: {
   const [activeId, setActiveId] = useState("");
   const [message, setMessage] = useState("");
   const [fallbackText, setFallbackText] = useState("");
-  const active = tasks.filter((task) => task.status === "cleaning_now");
-  const queued = tasks.filter((task) => !["cleaning_now", "ready", "skipped"].includes(task.status));
-  const completed = tasks.filter((task) => ["ready", "skipped"].includes(task.status));
+  const [localTasks, setLocalTasks] = useState(tasks);
+  const [completedOpen, setCompletedOpen] = useState(false);
+  const active = localTasks.filter((task) => task.status === "cleaning_now");
+  const queued = localTasks.filter((task) => !["cleaning_now", "ready", "skipped"].includes(task.status));
+  const completed = localTasks.filter((task) => ["ready", "skipped"].includes(task.status));
   const safe = queued.filter((task) => task.warningLevel === "safe").length;
   const risk = queued.filter((task) => ["tight", "impossible", "overdue"].includes(task.warningLevel)).length;
   const workRemaining = active.length + queued.length;
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, 30_000);
-    return () => window.clearInterval(interval);
-  }, [router]);
-
   async function onAction(task: CleaningTaskView, action: string, values: Record<string, unknown> = {}) {
     if (demoMode) { setMessage("Connect Supabase to update the live queue."); return; }
+    if (activeId) return;
     setActiveId(task.id);
     setMessage("");
-    const response = await fetch("/api/cleaning", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id, action, ...values }) });
-    setActiveId("");
-    setMessage(response.status === 409 ? "Another property is already being cleaned." : response.ok ? "Queue updated." : "Could not update the queue.");
-    if (response.ok) router.refresh();
+    try {
+      const response = await fetch("/api/cleaning", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id, action, ...values }) });
+      if (!response.ok) {
+        setMessage(response.status === 409 ? "Another property is already being cleaned." : "Could not update the queue.");
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      setLocalTasks((current) => current.map((item) => item.id !== task.id ? item : {
+        ...item,
+        status: action === "ready" ? "ready" : action === "start" ? "cleaning_now" : action === "skip" ? "skipped" : action === "delay" ? "delayed" : item.status,
+        actualStart: action === "start" ? nowIso : item.actualStart,
+        actualEnd: action === "ready" ? nowIso : item.actualEnd,
+        delayMinutes: action === "delay" ? Number(values.delayMinutes ?? item.delayMinutes) : item.delayMinutes,
+        durationMinutes: action === "edit" ? Number(values.durationMinutes ?? item.durationMinutes) : item.durationMinutes,
+        checkoutTime: action === "edit" ? String(values.expectedCheckoutTime ?? item.checkoutTime) : item.checkoutTime,
+        checkinTime: action === "edit" ? String(values.expectedCheckinTime ?? item.checkinTime) : item.checkinTime,
+      }));
+      setMessage("Queue updated.");
+      router.refresh();
+    } finally {
+      setActiveId("");
+    }
   }
 
   async function copyPlan() {
-    const text = formatCaretakerPlan(resolvedServiceDate, tasks.map((task) => ({
+    const text = formatCaretakerPlan(resolvedServiceDate, localTasks.map((task) => ({
       propertyName: task.propertyName,
       status: task.status,
       checkoutTime: task.checkoutTime,
@@ -136,7 +152,7 @@ export function TodayQueue({ tasks, demoMode, serviceDate, dateLabel, clock }: {
     {message ? <div className="notice" role="status">{message}</div> : null}
     {fallbackText ? <div className="export-fallback"><label htmlFor="caretaker-plan">Caretaker plan</label><textarea id="caretaker-plan" readOnly value={fallbackText} onFocus={(event) => event.currentTarget.select()} /></div> : null}
     {active.length ? <section className="queue-section queue-section--active"><div className="queue-heading"><span className="live-dot" />Cleaning now</div>{active.map((task) => <TaskCard key={task.id} task={task} demoMode={demoMode} activeId={activeId} onAction={onAction} />)}</section> : null}
-    <section className="queue-section"><div className="queue-heading">Up next <span>{queued.length}</span></div><div className="queue-list">{queued.map((task) => <TaskCard key={task.id} task={task} demoMode={demoMode} activeId={activeId} onAction={onAction} />)}{!queued.length && !active.length ? <div className="list-empty"><CheckCircle2 size={26} /><span>No turnovers queued</span></div> : null}</div></section>
-    {completed.length ? <details className="completed-list"><summary>Completed and skipped · {completed.length}</summary>{completed.map((task) => <TaskCard key={task.id} task={task} demoMode={demoMode} activeId={activeId} onAction={onAction} />)}</details> : null}
+    <section className="queue-section"><div className="queue-heading">Up next <span>{queued.length}</span></div><div className="queue-list">{queued.map((task) => <TaskCard key={task.id} task={task} demoMode={demoMode} activeId={activeId} onAction={onAction} />)}{!queued.length && !active.length ? <div className="list-empty"><SquareCheckBig size={26} /><span>No turnovers queued</span></div> : null}</div></section>
+    {completed.length ? <section className="completed-list"><button className="completed-toggle" type="button" aria-expanded={completedOpen} aria-controls="completed-tasks" aria-label={`${completedOpen ? "Hide" : "Show"} completed and skipped tasks`} onClick={() => setCompletedOpen((open) => !open)}>{completedOpen ? <Minus size={16} /> : <Plus size={16} />}<span>Completed and skipped</span><strong>{completed.length}</strong></button>{completedOpen ? <div id="completed-tasks">{completed.map((task) => <TaskCard key={task.id} task={task} demoMode={demoMode} activeId={activeId} onAction={onAction} />)}</div> : null}</section> : null}
   </>;
 }
