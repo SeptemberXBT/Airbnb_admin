@@ -179,7 +179,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
 }
 
 export type CleaningUpdate = {
-  taskId: string; action: "start" | "ready" | "delay" | "skip" | "edit";
+  taskId: string; action: "start" | "ready" | "delay" | "skip" | "edit" | "requeue";
   delayMinutes?: number; durationMinutes?: number; expectedCheckoutTime?: string; expectedCheckinTime?: string;
 };
 
@@ -236,6 +236,12 @@ export async function updateCleaningTask(input: CleaningUpdate, userId: string) 
       await tx`update public.cleaning_tasks set status = 'delayed', delay_minutes = ${input.delayMinutes ?? 10}, updated_at = now() where id = ${input.taskId}`;
     } else if (input.action === "skip") {
       await tx`update public.cleaning_tasks set status = 'skipped', updated_at = now() where id = ${input.taskId}`;
+    } else if (input.action === "requeue") {
+      await tx`
+        update public.cleaning_tasks set status = 'queued', actual_start = null, actual_end = null,
+          delay_minutes = 0, updated_at = now()
+        where id = ${input.taskId}
+      `;
     } else if (input.action === "edit" && input.durationMinutes) {
       await tx`update public.cleaning_tasks set expected_duration_minutes = ${input.durationMinutes}, updated_at = now() where id = ${input.taskId}`;
     }
