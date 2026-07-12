@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeCalendarWindows, trimCalendarWindow } from "./calendar-window";
+import { calendarWindowVersion, mergeCalendarWindows, trimCalendarWindow } from "./calendar-window";
 import type { CalendarProperty } from "./calendar-types";
 
 const property = (entries: CalendarProperty["entries"], lastSyncAt = "2026-07-12T08:00:00.000Z"): CalendarProperty => ({
@@ -51,5 +51,12 @@ describe("calendar window state", () => {
       entry("after", "2026-08-01", "2026-08-03"),
     ])], "2026-07-01", "2026-08-01");
     expect(trimmed[0].entries.map((item) => item.id)).toEqual(["overlap", "inside"]);
+  });
+
+  it("changes its version when shared calendar data changes", () => {
+    const original = property([entry("a", "2026-07-10", "2026-07-13")]);
+    const changed = property([{ ...entry("a", "2026-07-10", "2026-07-14"), expectedCheckoutTime: "12:00" }]);
+
+    expect(calendarWindowVersion([changed])).not.toBe(calendarWindowVersion([original]));
   });
 });

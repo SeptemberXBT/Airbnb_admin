@@ -50,6 +50,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const vacancyDialog = useRef<HTMLDialogElement>(null);
   const scroller = useRef<HTMLElement>(null);
   const loadingRef = useRef(false);
+  const mutationRef = useRef(false);
   const [properties, setProperties] = useState(initialProperties);
   const [windowStart, setWindowStart] = useState(startDate);
   const [dayCount, setDayCount] = useState(CHUNK_DAYS);
@@ -60,6 +61,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const [message, setMessage] = useState("");
   const [overlap, setOverlap] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [mutationPending, setMutationPending] = useState<"save" | "archive" | "">("");
   const [loadingDirection, setLoadingDirection] = useState<"previous" | "next" | "jump" | "">("");
   const [vacancyPanel, setVacancyPanel] = useState<VacancyPanel | null>(null);
   const [summaryStart, setSummaryStart] = useState(dateString(subDays(new Date(), 6)));
@@ -195,43 +197,63 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
       else editorDialog.current?.close();
       return;
     }
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    setMutationPending("save");
     const time = (name: string) => String(data.get(name) ?? "") || null;
     const durationValue = String(data.get("cleaningDurationMinutes") ?? "");
-    if (editor.entry?.source === "airbnb") {
-      const response = await fetch("/api/operation-overrides", {
-        method: "PUT", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ targetType: "external", targetId: editor.entry.id, propertyId: editor.property.id,
-          expectedCheckinTime: time("expectedCheckinTime"), expectedCheckoutTime: time("expectedCheckoutTime"),
-          cleaningDurationMinutes: durationValue ? Number(durationValue) : null, operationalNote: time("privateNote") }),
-      });
-      if (!response.ok) { setMessage("Could not save the operational override."); return; }
-    } else {
-      const body = {
-        ...(editor.entry ? { id: editor.entry.id } : {}), propertyId: editor.property.id,
-        listingId: editor.entry?.listingId ?? null, entryType: status,
-        startDate: String(data.get("startDate")), endDate: String(data.get("endDate")),
-        privateBookingName: time("privateBookingName"), privateContact: time("privateContact"),
-        privateNote: time("privateNote"), bookingSource: time("bookingSource"),
-        syncToAirbnb: data.get("syncToAirbnb") === "on", expectedCheckinTime: time("expectedCheckinTime"),
-        expectedCheckoutTime: time("expectedCheckoutTime"), cleaningDurationMinutes: durationValue ? Number(durationValue) : null,
-        allowOverlap: data.get("allowOverlap") === "on",
-      };
-      const response = await fetch("/api/local-entries", {
-        method: editor.entry ? "PATCH" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (response.status === 409) { setOverlap(true); setMessage("This range overlaps another entry. Confirm the overlap to continue."); return; }
-      if (!response.ok) { setMessage("Could not save this calendar entry."); return; }
+    try {
+      if (editor.entry?.source === "airbnb") {
+        const response = await fetch("/api/operation-overrides", {
+          method: "PUT", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ targetType: "external", targetId: editor.entry.id, propertyId: editor.property.id,
+            expectedCheckinTime: time("expectedCheckinTime"), expectedCheckoutTime: time("expectedCheckoutTime"),
+            cleaningDurationMinutes: durationValue ? Number(durationValue) : null, operationalNote: time("privateNote") }),
+        });
+        if (!response.ok) { setMessage("Could not save the operational override."); return; }
+      } else {
+        const body = {
+          ...(editor.entry ? { id: editor.entry.id } : {}), propertyId: editor.property.id,
+          listingId: editor.entry?.listingId ?? null, entryType: status,
+          startDate: String(data.get("startDate")), endDate: String(data.get("endDate")),
+          privateBookingName: time("privateBookingName"), privateContact: time("privateContact"),
+          privateNote: time("privateNote"), bookingSource: time("bookingSource"),
+          syncToAirbnb: data.get("syncToAirbnb") === "on", expectedCheckinTime: time("expectedCheckinTime"),
+          expectedCheckoutTime: time("expectedCheckoutTime"), cleaningDurationMinutes: durationValue ? Number(durationValue) : null,
+          allowOverlap: data.get("allowOverlap") === "on",
+        };
+        const response = await fetch("/api/local-entries", {
+          method: editor.entry ? "PATCH" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        });
+        if (response.status === 409) { setOverlap(true); setMessage("This range overlaps another entry. Confirm the overlap to continue."); return; }
+        if (!response.ok) { setMessage("Could not save this calendar entry."); return; }
+      }
+      editorDialog.current?.close();
+      await jumpTo(visibleDate);
+    } catch {
+      setMessage("Could not save this calendar entry.");
+    } finally {
+      mutationRef.current = false;
+      setMutationPending("");
     }
-    editorDialog.current?.close();
-    await jumpTo(visibleDate);
   }
 
   async function archive(id: string) {
     if (demoMode) { setMessage("Connect Supabase to archive entries."); return; }
-    const response = await fetch(`/api/local-entries?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (!response.ok) { setMessage("Could not archive this entry."); return; }
-    editorDialog.current?.close();
-    await jumpTo(visibleDate);
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    setMutationPending("archive");
+    try {
+      const response = await fetch(`/api/local-entries?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) { setMessage("Could not archive this entry."); return; }
+      editorDialog.current?.close();
+      await jumpTo(visibleDate);
+    } catch {
+      setMessage("Could not archive this entry.");
+    } finally {
+      mutationRef.current = false;
+      setMutationPending("");
+    }
   }
 
   async function refreshNow() {
@@ -348,7 +370,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
           </div>
           {editor.entry?.source !== "airbnb" ? <div className="toggle-stack"><label className="toggle"><input name="syncToAirbnb" type="checkbox" defaultChecked={editor.entry?.syncToAirbnb} /><span />Block on Airbnb</label>{editor.entry?.syncToAirbnb ? <span className={`status ${editor.entry.airbnbObserved ? "status--safe" : "status--waiting"}`}>{editor.entry.airbnbObserved ? "Observed on Airbnb" : "Pending Airbnb refresh"}</span> : null}{overlap ? <label className="toggle toggle--warning"><input name="allowOverlap" type="checkbox" /><span />Confirm overlapping entry</label> : null}</div> : <p className="source-lock">Airbnb dates cannot be cancelled or made available here.</p>}
           {editor.entry?.reservationUrl ? <a className="source-link" href={editor.entry.reservationUrl} target="_blank" rel="noreferrer">Open Airbnb reservation <ExternalLink size={14} /></a> : null}
-          <footer>{editor.entry?.source === "local" ? <button className="button button--danger" type="button" onClick={() => archive(editor.entry!.id)}>Archive</button> : <span /> }<button className="button button--primary" type="submit">Save</button></footer>
+          <footer>{editor.entry?.source === "local" ? <button className="button button--danger" type="button" disabled={Boolean(mutationPending)} onClick={() => archive(editor.entry!.id)}>{mutationPending === "archive" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "archive" ? "Archiving..." : "Archive"}</button> : <span /> }<button className="button button--primary" type="submit" disabled={Boolean(mutationPending)}>{mutationPending === "save" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "save" ? "Saving..." : "Save"}</button></footer>
         </form> : null}
       </dialog>
 

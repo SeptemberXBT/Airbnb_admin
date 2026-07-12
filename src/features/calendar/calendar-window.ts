@@ -1,5 +1,16 @@
 import type { CalendarProperty } from "./calendar-types";
 
+export function calendarWindowVersion(properties: CalendarProperty[]) {
+  return JSON.stringify(
+    [...properties]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((property) => ({
+        ...property,
+        entries: [...property.entries].sort((a, b) => a.id.localeCompare(b.id)),
+      })),
+  );
+}
+
 export function mergeCalendarWindows(current: CalendarProperty[], incoming: CalendarProperty[]) {
   const byProperty = new Map(current.map((property) => [property.id, property]));
   for (const property of incoming) {

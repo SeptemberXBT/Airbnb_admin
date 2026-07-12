@@ -1,5 +1,6 @@
 import { CalendarWorkspace } from "@/features/calendar/calendar-workspace";
 import { getCalendarData } from "@/features/calendar/calendar-service";
+import { calendarWindowVersion } from "@/features/calendar/calendar-window";
 import { requireUser } from "@/lib/auth/require-user";
 import { formatInTimeZone } from "date-fns-tz";
 import { addDays, format, parseISO } from "date-fns";
@@ -12,5 +13,5 @@ export default async function CalendarPage({ searchParams }: { searchParams: Pro
   const startDate = format(addDays(parseISO(anchorDate), -7), "yyyy-MM-dd");
   const user = await requireUser();
   const properties = await getCalendarData(user.id, startDate, 28);
-  return <CalendarWorkspace properties={properties} startDate={startDate} anchorDate={anchorDate} zoom={zoom} demoMode={process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production"} />;
+  return <CalendarWorkspace key={calendarWindowVersion(properties)} properties={properties} startDate={startDate} anchorDate={anchorDate} zoom={zoom} demoMode={process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production"} />;
 }
