@@ -45,11 +45,11 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
   const sql = getDb();
   const propertyRows = await sql<{
     id: string; name: string; default_checkin_time: string; default_checkout_time: string;
-    default_cleaning_minutes: number; checkout_buffer_minutes: number; checkin_buffer_minutes: number;
+    default_cleaning_minutes: number; checkout_buffer_minutes: number;
     housekeeping_cutoff_time: string;
   }[]>`
     select p.id, p.name, p.default_checkin_time::text, p.default_checkout_time::text,
-      p.default_cleaning_minutes, p.checkout_buffer_minutes, p.checkin_buffer_minutes,
+      p.default_cleaning_minutes, p.checkout_buffer_minutes,
       p.housekeeping_cutoff_time::text
     from public.properties p join public.property_members pm on pm.property_id = p.id and pm.user_id = ${userId}
     where p.active and p.archived_at is null order by p.name
@@ -87,7 +87,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
   const turnoverProperties: TurnoverProperty[] = propertyRows.map((row) => ({
     id: row.id, name: row.name, defaultCheckinTime: row.default_checkin_time.slice(0, 5),
     defaultCheckoutTime: row.default_checkout_time.slice(0, 5), defaultCleaningMinutes: row.default_cleaning_minutes,
-    checkoutBufferMinutes: row.checkout_buffer_minutes, checkinBufferMinutes: row.checkin_buffer_minutes,
+    checkoutBufferMinutes: row.checkout_buffer_minutes,
     housekeepingCutoffTime: row.housekeeping_cutoff_time.slice(0, 5), reservations: reservations.get(row.id) ?? [],
   }));
   const derived = deriveTurnovers(turnoverProperties, serviceDate);

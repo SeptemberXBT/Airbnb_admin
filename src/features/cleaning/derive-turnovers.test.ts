@@ -3,7 +3,7 @@ import { deriveTurnovers, type TurnoverProperty } from "./derive-turnovers";
 
 const base: TurnoverProperty = {
   id: "property-1", name: "Garden Room", defaultCheckinTime: "13:00", defaultCheckoutTime: "11:00",
-  defaultCleaningMinutes: 15, checkoutBufferMinutes: 5, checkinBufferMinutes: 5,
+  defaultCleaningMinutes: 15, checkoutBufferMinutes: 5,
   housekeepingCutoffTime: "17:00", reservations: [],
 };
 
