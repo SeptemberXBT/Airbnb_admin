@@ -4,6 +4,7 @@ import { addMinutes, subMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { deriveTurnovers, type TurnoverProperty, type TurnoverReservation } from "./derive-turnovers";
 import { buildCleaningSchedule, type CleaningCandidate, type CleaningStatus, type WarningLevel } from "./scheduler";
+import { externalTurnoverTypes } from "./turnover-sources";
 
 export type CleaningTaskView = {
   id: string; propertyId: string; propertyName: string; serviceDate: string;
@@ -61,7 +62,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
       o.expected_checkout_time::text, o.cleaning_duration_minutes
     from public.external_calendar_events e join public.listings l on l.id = e.listing_id
     left join public.operation_overrides o on o.external_event_id = e.id
-    where l.property_id in ${sql(propertyIds)} and e.active and e.event_type = 'reservation'
+    where l.property_id in ${sql(propertyIds)} and e.active and e.event_type in ${sql(externalTurnoverTypes)}
       and (e.start_date = ${serviceDate} or e.end_date = ${serviceDate})
   `;
   const local = await sql<{
