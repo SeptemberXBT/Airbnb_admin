@@ -54,4 +54,12 @@ describe("initial database migration", () => {
     expect(sql).toMatch(/after insert on public\.properties/i);
     expect(sql).toMatch(/on conflict \(property_id, user_id\) do nothing/i);
   });
+
+  it("stores optional nonnegative manual-entry payments", async () => {
+    const up = await readFile(path.join(process.cwd(), "supabase/migrations/0005_manual_entry_payment.sql"), "utf8");
+    const down = await readFile(path.join(process.cwd(), "supabase/migrations/0005_manual_entry_payment.down.sql"), "utf8");
+    expect(up).toMatch(/add column payment_amount numeric\(12,2\)/i);
+    expect(up).toMatch(/payment_amount >= 0/i);
+    expect(down).toMatch(/drop column payment_amount/i);
+  });
 });
