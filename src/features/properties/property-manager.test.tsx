@@ -49,7 +49,7 @@ describe("PropertyManager mutation feedback", () => {
       .mockReturnValueOnce(pendingPost)
       .mockResolvedValueOnce(new Response(JSON.stringify({ properties: [property] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const { container } = render(<PropertyManager initialProperties={[]} demoMode={false} />);
+    render(<PropertyManager initialProperties={[]} demoMode={false} />);
 
     await userEvent.click(screen.getByText("Add property"));
     const details = screen.getByText("Add property").closest("details");
