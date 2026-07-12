@@ -9,7 +9,6 @@ const defaults = {
   timezone: "Asia/Kolkata",
   defaultCleaningMinutes: 15,
   checkoutBufferMinutes: 5,
-  checkinBufferMinutes: 5,
 };
 
 function formPayload(form: HTMLFormElement) {
@@ -20,7 +19,7 @@ function formPayload(form: HTMLFormElement) {
     timezone: "Asia/Kolkata",
     defaultCleaningMinutes: Number(data.get("defaultCleaningMinutes")),
     checkoutBufferMinutes: Number(data.get("checkoutBufferMinutes")),
-    checkinBufferMinutes: Number(data.get("checkinBufferMinutes")),
+    checkinBufferMinutes: 5,
     inboundIcalUrl: String(data.get("inboundIcalUrl")),
   };
 }
@@ -34,7 +33,6 @@ function PropertyFields({ property }: { property?: PropertySummary }) {
       <div className="field field--wide"><label>Standard guest times</label><div className="fixed-defaults"><span>Checkout <strong>11:00 AM</strong></span><span>Check-in <strong>1:00 PM</strong></span></div></div>
       <div className="field"><label>Cleaning minutes</label><input name="defaultCleaningMinutes" type="number" min="5" max="480" defaultValue={property?.defaultCleaningMinutes ?? defaults.defaultCleaningMinutes} required /></div>
       <div className="field"><label>Checkout buffer</label><input name="checkoutBufferMinutes" type="number" min="0" max="120" defaultValue={defaults.checkoutBufferMinutes} required /></div>
-      <div className="field"><label>Check-in buffer</label><input name="checkinBufferMinutes" type="number" min="0" max="120" defaultValue={defaults.checkinBufferMinutes} required /></div>
     </div>
   );
 }

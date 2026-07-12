@@ -17,7 +17,6 @@ export type TurnoverProperty = {
   defaultCheckoutTime: string;
   defaultCleaningMinutes: number;
   checkoutBufferMinutes: number;
-  checkinBufferMinutes: number;
   housekeepingCutoffTime: string;
   reservations: TurnoverReservation[];
 };
@@ -35,6 +34,7 @@ export type DerivedTurnover = {
 };
 
 const indiaInstant = (date: string, time: string) => fromZonedTime(`${date}T${time}:00`, "Asia/Kolkata");
+const READY_BUFFER_MINUTES = 5;
 
 export function deriveTurnovers(properties: TurnoverProperty[], serviceDate: string): DerivedTurnover[] {
   return properties.flatMap((property) => {
@@ -54,7 +54,7 @@ export function deriveTurnovers(properties: TurnoverProperty[], serviceDate: str
       ? indiaInstant(serviceDate, incoming.expectedCheckinTime ?? property.defaultCheckinTime)
       : null;
     const readyDeadline = guestArrivalTime
-      ? subMinutes(guestArrivalTime, property.checkinBufferMinutes)
+      ? subMinutes(guestArrivalTime, READY_BUFFER_MINUTES)
       : indiaInstant(serviceDate, property.housekeepingCutoffTime);
     return [{
       key: `${property.id}:${serviceDate}`,
