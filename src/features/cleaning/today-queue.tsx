@@ -12,6 +12,7 @@ import {
   Minus,
   Play,
   Plus,
+  RotateCcw,
   SkipForward,
   SquareCheckBig,
   TimerReset,
@@ -35,6 +36,7 @@ function TaskCard({ task, demoMode, activeId, onAction }: {
 }) {
   const running = task.status === "cleaning_now";
   const done = task.status === "ready";
+  const finished = done || task.status === "skipped";
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -70,6 +72,7 @@ function TaskCard({ task, demoMode, activeId, onAction }: {
       {!running ? <button className="icon-button" title="Skip cleaning task" aria-label={`Skip ${task.propertyName}`} disabled={activeId === task.id} onClick={() => onAction(task, "skip")}><SkipForward size={17} /></button> : null}
       <details className="quick-editor"><summary className="icon-button" title="Edit times and duration" aria-label={`Edit ${task.propertyName} times`}><Edit3 size={17} /></summary><form onSubmit={edit}><div className="field"><label>Checkout</label><input type="time" name="expectedCheckoutTime" defaultValue={task.checkoutTime} /></div><div className="field"><label>Check-in</label><input type="time" name="expectedCheckinTime" defaultValue={task.checkinTime ?? ""} disabled={!task.incomingEntryKey} /></div><div className="field"><label>Minutes</label><input type="number" name="durationMinutes" min="5" max="480" defaultValue={task.durationMinutes} required /></div><button className="button button--quiet" type="button" onClick={resetTimes}>Use standard times</button><button className="button button--primary" type="submit" disabled={demoMode}>Apply</button></form></details>
     </div> : null}
+    {finished ? <div className="cleaning-actions"><button className="quick-action" type="button" aria-label={`Return ${task.propertyName} to queue`} disabled={activeId === task.id} onClick={() => onAction(task, "requeue")}><RotateCcw size={17} /> Return to queue</button></div> : null}
   </article>;
 }
 
@@ -111,10 +114,10 @@ export function TodayQueue({ tasks, demoMode, serviceDate, dateLabel, clock }: {
       const nowIso = new Date().toISOString();
       setLocalTasks((current) => current.map((item) => item.id !== task.id ? item : {
         ...item,
-        status: action === "ready" ? "ready" : action === "start" ? "cleaning_now" : action === "skip" ? "skipped" : action === "delay" ? "delayed" : item.status,
-        actualStart: action === "start" ? nowIso : item.actualStart,
-        actualEnd: action === "ready" ? nowIso : item.actualEnd,
-        delayMinutes: action === "delay" ? Number(values.delayMinutes ?? item.delayMinutes) : item.delayMinutes,
+        status: action === "requeue" ? "queued" : action === "ready" ? "ready" : action === "start" ? "cleaning_now" : action === "skip" ? "skipped" : action === "delay" ? "delayed" : item.status,
+        actualStart: action === "requeue" ? null : action === "start" ? nowIso : item.actualStart,
+        actualEnd: action === "requeue" ? null : action === "ready" ? nowIso : item.actualEnd,
+        delayMinutes: action === "requeue" ? 0 : action === "delay" ? Number(values.delayMinutes ?? item.delayMinutes) : item.delayMinutes,
         durationMinutes: action === "edit" ? Number(values.durationMinutes ?? item.durationMinutes) : item.durationMinutes,
         checkoutTime: action === "edit" ? String(values.expectedCheckoutTime ?? item.checkoutTime) : item.checkoutTime,
         checkinTime: action === "edit" ? values.expectedCheckinTime === undefined ? item.checkinTime : String(values.expectedCheckinTime) : item.checkinTime,

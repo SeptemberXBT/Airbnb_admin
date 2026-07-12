@@ -59,6 +59,36 @@ describe("TodayQueue live actions", () => {
     await waitFor(() => expect(screen.getByText("No arrival")).toBeVisible());
     expect(screen.queryByText("Invalid Date")).not.toBeInTheDocument();
   });
+
+  it.each(["ready", "skipped"] as const)("returns a %s task to Up next immediately", async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<TodayQueue serviceDate="2026-07-12" demoMode={false} tasks={[task({
+      status,
+      actualStart: status === "ready" ? "2026-07-12T05:40:00.000Z" : null,
+      actualEnd: status === "ready" ? "2026-07-12T05:55:00.000Z" : null,
+    })]} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /show completed and skipped/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Return Suite A to queue" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeVisible());
+    expect(screen.queryByRole("button", { name: /show completed and skipped/i })).not.toBeInTheDocument();
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ taskId: "task-1", action: "requeue" });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a completed task completed when requeue fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "operation_failed" }), { status: 500 })));
+    render(<TodayQueue serviceDate="2026-07-12" demoMode={false} tasks={[task({ status: "skipped" })]} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /show completed and skipped/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Return Suite A to queue" }));
+
+    await waitFor(() => expect(screen.getByText("Could not update the queue.")).toBeVisible());
+    expect(screen.getByRole("button", { name: "Return Suite A to queue" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+  });
 });
 
 describe("TodayQueue caretaker export", () => {
