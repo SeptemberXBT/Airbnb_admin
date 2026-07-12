@@ -1,0 +1,15 @@
+drop table if exists public.audit_log cascade;
+drop table if exists public.sync_runs cascade;
+drop table if exists public.cleaning_tasks cascade;
+drop table if exists public.operation_overrides cascade;
+drop table if exists public.local_calendar_entries cascade;
+drop table if exists public.external_calendar_events cascade;
+drop table if exists public.listings cascade;
+drop table if exists public.property_members cascade;
+drop table if exists public.properties cascade;
+drop function if exists public.app_user_can_access_property(uuid);
+drop type if exists public.sync_status;
+drop type if exists public.warning_level;
+drop type if exists public.cleaning_status;
+drop type if exists public.local_entry_type;
+drop type if exists public.calendar_event_type;
