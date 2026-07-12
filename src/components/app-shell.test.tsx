@@ -1,5 +1,10 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/calendar",
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 describe("AppShell", () => {
   it("provides all four management destinations without hover-only controls", async () => {

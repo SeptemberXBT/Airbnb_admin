@@ -11,6 +11,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { PropsWithChildren } from "react";
 import { ConnectionStatus } from "./connection-status";
+import { SharedWorkspaceRefresh } from "./shared-workspace-refresh";
 
 const destinations = [
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
@@ -42,6 +43,7 @@ export function AppShell({ children }: PropsWithChildren) {
   return (
     <div className="app-shell">
       <ConnectionStatus />
+      <SharedWorkspaceRefresh />
       <aside className="sidebar">
         <Link href="/calendar" className="brand" aria-label="Noir Haus Admin calendar">
           <span className="brand__mark"><House aria-hidden="true" size={18} /></span>
