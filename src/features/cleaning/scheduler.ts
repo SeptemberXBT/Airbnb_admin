@@ -41,9 +41,15 @@ export function buildCleaningSchedule(candidates: CleaningCandidate[], now: Date
   const finished = candidates.filter((task) => task.status === "ready" || task.status === "skipped");
   const queued = candidates.filter((task) => !["cleaning_now", "ready", "skipped"].includes(task.status));
   const effectiveRelease = (task: CleaningCandidate) => addMinutes(task.releaseTime, task.delayMinutes);
-  const byDeadline = (a: CleaningCandidate, b: CleaningCandidate) =>
-    a.readyDeadline.getTime() - b.readyDeadline.getTime()
+  const stableOrder = (a: CleaningCandidate, b: CleaningCandidate) =>
+    a.propertyName.localeCompare(b.propertyName)
+    || a.id.localeCompare(b.id);
+  const byArrival = (a: CleaningCandidate, b: CleaningCandidate) =>
+    (a.guestArrivalTime?.getTime() ?? 0) - (b.guestArrivalTime?.getTime() ?? 0)
     || effectiveRelease(a).getTime() - effectiveRelease(b).getTime()
+    || stableOrder(a, b);
+  const byRelease = (a: CleaningCandidate, b: CleaningCandidate) =>
+    effectiveRelease(a).getTime() - effectiveRelease(b).getTime()
     || a.propertyName.localeCompare(b.propertyName)
     || a.id.localeCompare(b.id);
 
@@ -57,15 +63,40 @@ export function buildCleaningSchedule(candidates: CleaningCandidate[], now: Date
   }
   const remaining = [...queued];
   while (remaining.length) {
-    let available = remaining.filter((task) => effectiveRelease(task) <= cursor).sort(byDeadline);
-    if (!available.length) {
-      const nextRelease = remaining.reduce((earliest, task) =>
-        effectiveRelease(task) < earliest ? effectiveRelease(task) : earliest,
-      effectiveRelease(remaining[0]));
-      cursor = nextRelease;
-      available = remaining.filter((task) => effectiveRelease(task) <= cursor).sort(byDeadline);
+    const arriving = remaining.filter((task) => task.guestArrivalTime);
+    const availableArriving = arriving
+      .filter((task) => effectiveRelease(task) <= cursor)
+      .sort(byArrival);
+    let task = availableArriving[0];
+
+    if (!task && arriving.length) {
+      const nextArrivalRelease = arriving.reduce((earliest, candidate) =>
+        effectiveRelease(candidate) < earliest ? effectiveRelease(candidate) : earliest,
+      effectiveRelease(arriving[0]));
+      const gapTask = remaining
+        .filter((candidate) => !candidate.guestArrivalTime
+          && effectiveRelease(candidate) <= cursor
+          && addMinutes(cursor, candidate.durationMinutes) <= nextArrivalRelease)
+        .sort(byRelease)[0];
+      if (gapTask) task = gapTask;
+      else {
+        cursor = nextArrivalRelease;
+        continue;
+      }
     }
-    const task = available[0];
+
+    if (!task) {
+      const availableNoArrival = remaining
+        .filter((candidate) => effectiveRelease(candidate) <= cursor)
+        .sort(byRelease);
+      task = availableNoArrival[0];
+      if (!task) {
+        cursor = remaining.reduce((earliest, candidate) =>
+          effectiveRelease(candidate) < earliest ? effectiveRelease(candidate) : earliest,
+        effectiveRelease(remaining[0]));
+        continue;
+      }
+    }
     remaining.splice(remaining.findIndex((candidate) => candidate.id === task.id), 1);
     const plannedStart = new Date(cursor);
     const plannedEnd = addMinutes(plannedStart, task.durationMinutes);
