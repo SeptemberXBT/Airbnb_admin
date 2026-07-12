@@ -8,6 +8,7 @@ export type CalendarEntry = {
   startDate: string;
   endDate: string;
   privateBookingName: string | null;
+  paymentAmount: string | null;
   privateContact: string | null;
   privateNote: string | null;
   expectedCheckinTime: string | null;

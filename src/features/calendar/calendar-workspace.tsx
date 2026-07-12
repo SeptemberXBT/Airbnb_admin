@@ -21,6 +21,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Download,
   ExternalLink,
   RefreshCw,
   X,
@@ -48,6 +49,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
 }) {
   const editorDialog = useRef<HTMLDialogElement>(null);
   const vacancyDialog = useRef<HTMLDialogElement>(null);
+  const exportDialog = useRef<HTMLDialogElement>(null);
   const scroller = useRef<HTMLElement>(null);
   const loadingRef = useRef(false);
   const mutationRef = useRef(false);
@@ -68,6 +70,10 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const [summaryEnd, setSummaryEnd] = useState(dateString(new Date()));
   const [summary, setSummary] = useState<VacancySummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [exportStart, setExportStart] = useState(anchorDate);
+  const [exportEnd, setExportEnd] = useState(dateString(addDays(parseISO(anchorDate), zoom - 1)));
+  const [exportPending, setExportPending] = useState(false);
+  const [exportError, setExportError] = useState("");
   const dates = useMemo(() => Array.from({ length: dayCount }, (_, index) => addDays(parseISO(windowStart), index)), [dayCount, windowStart]);
   const today = dateString(new Date());
   const vacancy = useMemo(() => calculateVacancy(properties, windowStart, dateString(addDays(parseISO(windowStart), dayCount - 1))), [dayCount, properties, windowStart]);
@@ -202,6 +208,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
     setMutationPending("save");
     const time = (name: string) => String(data.get(name) ?? "") || null;
     const durationValue = String(data.get("cleaningDurationMinutes") ?? "");
+    const paymentValue = String(data.get("paymentAmount") ?? "");
     try {
       if (editor.entry?.source === "airbnb") {
         const response = await fetch("/api/operation-overrides", {
@@ -217,6 +224,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
           listingId: editor.entry?.listingId ?? null, entryType: status,
           startDate: String(data.get("startDate")), endDate: String(data.get("endDate")),
           privateBookingName: time("privateBookingName"), privateContact: time("privateContact"),
+          paymentAmount: paymentValue ? Number(paymentValue) : null,
           privateNote: time("privateNote"), bookingSource: time("bookingSource"),
           syncToAirbnb: data.get("syncToAirbnb") === "on", expectedCheckinTime: time("expectedCheckinTime"),
           expectedCheckoutTime: time("expectedCheckoutTime"), cleaningDurationMinutes: durationValue ? Number(durationValue) : null,
@@ -264,6 +272,35 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
     setSyncing(false);
     setMessage(response.status === 429 ? "Refresh is cooling down. Try again in a minute." : response.ok ? "Calendar synchronized." : "Calendar refresh failed.");
     if (response.ok) await jumpTo(visibleDate);
+  }
+
+  function openExport() {
+    setExportStart(visibleDate);
+    setExportEnd(dateString(addDays(parseISO(visibleDate), calendarZoom - 1)));
+    setExportError("");
+    exportDialog.current?.showModal();
+  }
+
+  async function downloadExport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (exportPending) return;
+    setExportPending(true);
+    setExportError("");
+    try {
+      const response = await fetch(`/api/manual-bookings-export?start=${encodeURIComponent(exportStart)}&end=${encodeURIComponent(exportEnd)}`);
+      if (!response.ok) { setExportError("Could not export that date range."); return; }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `noir-haus-manual-bookings-${exportStart}-to-${exportEnd}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      exportDialog.current?.close();
+    } catch {
+      setExportError("Could not export that date range.");
+    } finally {
+      setExportPending(false);
+    }
   }
 
   const shown = (entry: CalendarEntry) => filter === "all"
@@ -323,6 +360,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
             {[14, 30].map((value) => <button className={calendarZoom === value ? "is-active" : ""} key={value} onClick={() => changeZoom(value as 14 | 30)}>{value}d</button>)}
           </div>
           <select className="compact-select" aria-label="Filter calendar entries" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All entries</option><option value="bookings">Bookings</option><option value="blocks">Blocks</option></select>
+          <button className="button button--quiet" type="button" onClick={openExport}><Download size={17} /> Export CSV</button>
           <button className="button button--primary" onClick={refreshNow} disabled={syncing}><RefreshCw className={syncing ? "spin" : ""} size={17} /> {syncing ? "Syncing..." : "Refresh now"}</button>
         </div>
       </header>
@@ -362,7 +400,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
             <div className="field"><label>Status</label><select name="entryType" defaultValue={editor.entry?.kind ?? "blocked"} disabled={editor.entry?.source === "airbnb"}><option value="available">Available</option><option value="blocked">Blocked</option><option value="direct_reservation">Direct reservation</option>{editor.entry?.source === "airbnb" ? <option value={editor.entry.kind}>{editor.entry.label}</option> : null}</select></div>
             <div className="field"><label>Start date</label><input name="startDate" type="date" defaultValue={editor.entry?.startDate ?? editor.startDate} readOnly={editor.entry?.source === "airbnb"} required /></div>
             <div className="field"><label>End date</label><input name="endDate" type="date" defaultValue={editor.entry?.endDate ?? dateString(addDays(parseISO(editor.startDate), 1))} readOnly={editor.entry?.source === "airbnb"} required /></div>
-            {editor.entry?.source !== "airbnb" ? <><div className="field"><label>Private booking label</label><input name="privateBookingName" defaultValue={editor.entry?.privateBookingName ?? ""} /></div><div className="field"><label>Private contact</label><input name="privateContact" defaultValue={editor.entry?.privateContact ?? ""} /></div><div className="field"><label>Booking source</label><input name="bookingSource" defaultValue="direct" /></div></> : null}
+            {editor.entry?.source !== "airbnb" ? <><div className="field"><label htmlFor="entry-guest-name">Guest name</label><input id="entry-guest-name" name="privateBookingName" defaultValue={editor.entry?.privateBookingName ?? ""} /></div><div className="field"><label htmlFor="entry-payment">Total payment (INR)</label><input id="entry-payment" name="paymentAmount" type="number" min="0" max="9999999999.99" step="0.01" inputMode="decimal" defaultValue={editor.entry?.paymentAmount ?? ""} /></div><div className="field"><label>Private contact</label><input name="privateContact" defaultValue={editor.entry?.privateContact ?? ""} /></div><div className="field"><label>Booking source</label><input name="bookingSource" defaultValue="direct" /></div></> : null}
             <div className="field"><label>Expected check-in</label><input name="expectedCheckinTime" type="time" defaultValue={editor.entry?.expectedCheckinTime ?? editor.property.defaultCheckinTime} /></div>
             <div className="field"><label>Expected checkout</label><input name="expectedCheckoutTime" type="time" defaultValue={editor.entry?.expectedCheckoutTime ?? editor.property.defaultCheckoutTime} /></div>
             <div className="field"><label>Cleaning minutes</label><input name="cleaningDurationMinutes" type="number" min="5" max="480" defaultValue={editor.entry?.cleaningDurationMinutes ?? editor.property.defaultCleaningMinutes} /></div>
@@ -372,6 +410,15 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
           {editor.entry?.reservationUrl ? <a className="source-link" href={editor.entry.reservationUrl} target="_blank" rel="noreferrer">Open Airbnb reservation <ExternalLink size={14} /></a> : null}
           <footer>{editor.entry?.source === "local" ? <button className="button button--danger" type="button" disabled={Boolean(mutationPending)} onClick={() => archive(editor.entry!.id)}>{mutationPending === "archive" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "archive" ? "Archiving..." : "Archive"}</button> : <span /> }<button className="button button--primary" type="submit" disabled={Boolean(mutationPending)}>{mutationPending === "save" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "save" ? "Saving..." : "Save"}</button></footer>
         </form> : null}
+      </dialog>
+
+      <dialog className="export-dialog" ref={exportDialog} onClose={() => setExportError("")}>
+        <form onSubmit={downloadExport}>
+          <header><div><span>Private report</span><h2>Export manual bookings</h2></div><button type="button" className="icon-button" aria-label="Close export dialog" onClick={() => exportDialog.current?.close()}><X size={18} /></button></header>
+          {exportError ? <div className="notice" role="status">{exportError}</div> : null}
+          <div className="form-grid export-fields"><div className="field"><label>Start date<input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} required /></label></div><div className="field"><label>End date<input type="date" value={exportEnd} onChange={(event) => setExportEnd(event.target.value)} required /></label></div></div>
+          <footer><span /><button className="button button--primary" type="submit" disabled={exportPending}>{exportPending ? <RefreshCw className="spin" size={16} /> : <Download size={16} />} {exportPending ? "Preparing..." : "Download CSV"}</button></footer>
+        </form>
       </dialog>
 
       <dialog className="vacancy-dialog" ref={vacancyDialog} onClose={() => setVacancyPanel(null)}>

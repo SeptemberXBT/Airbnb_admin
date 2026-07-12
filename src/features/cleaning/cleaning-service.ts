@@ -5,6 +5,8 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { deriveTurnovers, type TurnoverProperty, type TurnoverReservation } from "./derive-turnovers";
 import { buildCleaningSchedule, type CleaningCandidate, type CleaningStatus, type WarningLevel } from "./scheduler";
 import { externalTurnoverTypes } from "./turnover-sources";
+import { reconcileCleaningTasks } from "./queue-reconciliation";
+import { createPostgresCleaningTaskStore } from "./queue-reconciliation-store";
 
 export type CleaningTaskView = {
   id: string; propertyId: string; propertyName: string; serviceDate: string;
@@ -54,7 +56,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
   `;
   const propertyIds = propertyRows.map((row) => row.id);
   if (!propertyIds.length) return [];
-  const external = await sql<{
+  const [external, local] = await Promise.all([sql<{
     property_id: string; id: string; start_date: string; end_date: string;
     expected_checkin_time: string | null; expected_checkout_time: string | null; cleaning_duration_minutes: number | null;
   }[]>`
@@ -64,8 +66,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     left join public.operation_overrides o on o.external_event_id = e.id
     where l.property_id in ${sql(propertyIds)} and e.active and e.event_type in ${sql(externalTurnoverTypes)}
       and (e.start_date = ${serviceDate} or e.end_date = ${serviceDate})
-  `;
-  const local = await sql<{
+  `, sql<{
     property_id: string; id: string; start_date: string; end_date: string;
     expected_checkin_time: string | null; expected_checkout_time: string | null; cleaning_duration_minutes: number | null;
   }[]>`
@@ -74,7 +75,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     from public.local_calendar_entries e left join public.operation_overrides o on o.local_entry_id = e.id
     where e.property_id in ${sql(propertyIds)} and e.active and e.entry_type = 'direct_reservation'
       and (e.start_date = ${serviceDate} or e.end_date = ${serviceDate})
-  `;
+  `]);
   const reservations = new Map<string, TurnoverReservation[]>();
   const add = (propertyId: string, reservation: TurnoverReservation) => reservations.set(propertyId, [...(reservations.get(propertyId) ?? []), reservation]);
   for (const row of external) add(row.property_id, { key: `external:${row.id}`, startDate: row.start_date, endDate: row.end_date,
@@ -90,51 +91,9 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     housekeepingCutoffTime: row.housekeeping_cutoff_time.slice(0, 5), reservations: reservations.get(row.id) ?? [],
   }));
   const derived = deriveTurnovers(turnoverProperties, serviceDate);
-  const derivedPropertyIds = derived.map((task) => task.propertyId);
-  if (derivedPropertyIds.length) {
-    await sql`
-      update public.cleaning_tasks set archived_at = now(), updated_at = now()
-      where service_date = ${serviceDate} and property_id in ${sql(propertyIds)}
-        and property_id not in ${sql(derivedPropertyIds)} and status in ('queued', 'delayed') and archived_at is null
-    `;
-  } else {
-    await sql`
-      update public.cleaning_tasks set archived_at = now(), updated_at = now()
-      where service_date = ${serviceDate} and property_id in ${sql(propertyIds)}
-        and status in ('queued', 'delayed') and archived_at is null
-    `;
-  }
-  for (const task of derived) {
-    await sql`
-      update public.cleaning_tasks set archived_at = now(), updated_at = now()
-      where property_id = ${task.propertyId} and service_date = ${serviceDate} and archived_at is null
-        and status <> 'cleaning_now'
-        and (outgoing_entry_key is distinct from ${task.outgoingEntryKey}
-          or incoming_entry_key is distinct from ${task.incomingEntryKey})
-    `;
-    await sql`
-      insert into public.cleaning_tasks (
-        property_id, service_date, outgoing_entry_key, incoming_entry_key, release_time,
-        ready_deadline, guest_arrival_time, expected_duration_minutes
-      ) values (
-        ${task.propertyId}, ${serviceDate}, ${task.outgoingEntryKey}, ${task.incomingEntryKey},
-        ${task.releaseTime}, ${task.readyDeadline}, ${task.guestArrivalTime}, ${task.durationMinutes}
-      ) on conflict (property_id, service_date) where archived_at is null do update set
-        outgoing_entry_key = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.outgoing_entry_key else excluded.outgoing_entry_key end,
-        incoming_entry_key = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.incoming_entry_key else excluded.incoming_entry_key end,
-        release_time = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.release_time else excluded.release_time end,
-        ready_deadline = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.ready_deadline else excluded.ready_deadline end,
-        guest_arrival_time = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.guest_arrival_time else excluded.guest_arrival_time end,
-        expected_duration_minutes = case when public.cleaning_tasks.status = 'cleaning_now'
-          then public.cleaning_tasks.expected_duration_minutes else excluded.expected_duration_minutes end,
-        updated_at = now()
-    `;
-  }
+  await sql.begin(async (tx) => reconcileCleaningTasks(
+    createPostgresCleaningTaskStore(tx), propertyIds, serviceDate, derived,
+  ));
   const rows = await sql<{
     id: string; property_id: string; property_name: string; outgoing_entry_key: string | null; incoming_entry_key: string | null;
     release_time: string; ready_deadline: string; guest_arrival_time: string | null; expected_duration_minutes: number;
@@ -158,10 +117,6 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
     actualStart: row.actual_start ? new Date(row.actual_start) : null,
     actualEnd: row.actual_end ? new Date(row.actual_end) : null, delayMinutes: row.delay_minutes,
   })), now);
-  for (const task of schedule) await sql`
-    update public.cleaning_tasks set planned_start = ${task.plannedStart}, planned_end = ${task.plannedEnd},
-      warning_level = ${task.warningLevel}, updated_at = now() where id = ${task.id}
-  `;
   const sourceById = new Map(rows.map((row) => [row.id, row]));
   return schedule.map((task) => ({
     id: task.id, propertyId: task.propertyId, propertyName: task.propertyName, serviceDate,

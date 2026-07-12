@@ -10,6 +10,7 @@ export const localEntrySchema = z.object({
   startDate: z.iso.date(),
   endDate: z.iso.date(),
   privateBookingName: optionalPrivateText,
+  paymentAmount: z.number().finite().min(0).max(9_999_999_999.99).optional().nullable(),
   privateContact: optionalPrivateText,
   privateNote: optionalPrivateText,
   bookingSource: z.string().trim().max(100).optional().nullable(),

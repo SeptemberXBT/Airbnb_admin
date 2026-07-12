@@ -53,10 +53,10 @@ export async function createLocalEntry(input: LocalEntryInput, userId: string) {
     const [entry] = await tx<{ id: string }[]>`
       insert into public.local_calendar_entries (
         property_id, listing_id, entry_type, start_date, end_date, private_booking_name,
-        private_contact, private_note, booking_source, sync_to_airbnb, created_by
+        payment_amount, private_contact, private_note, booking_source, sync_to_airbnb, created_by
       ) values (
         ${input.propertyId}, ${input.listingId ?? null}, ${input.entryType}, ${input.startDate}, ${input.endDate},
-        ${input.privateBookingName ?? null}, ${input.privateContact ?? null}, ${input.privateNote ?? null},
+        ${input.privateBookingName ?? null}, ${input.paymentAmount ?? null}, ${input.privateContact ?? null}, ${input.privateNote ?? null},
         ${input.bookingSource ?? null}, ${input.syncToAirbnb}, ${userId}
       ) returning id
     `;
@@ -71,7 +71,7 @@ export async function createLocalEntry(input: LocalEntryInput, userId: string) {
     await tx`
       insert into public.audit_log (property_id, actor_id, action, entity_type, entity_id, changes)
       values (${input.propertyId}, ${userId}, 'created', 'local_calendar_entry', ${entry.id},
-        ${tx.json({ entryType: input.entryType, startDate: input.startDate, endDate: input.endDate, syncToAirbnb: input.syncToAirbnb })})
+        ${tx.json({ entryType: input.entryType, startDate: input.startDate, endDate: input.endDate, syncToAirbnb: input.syncToAirbnb, paymentRecorded: input.paymentAmount != null })})
     `;
     return entry;
   });
@@ -86,6 +86,7 @@ export async function updateLocalEntry(entryId: string, input: LocalEntryInput, 
     const [entry] = await tx`
       update public.local_calendar_entries set entry_type = ${input.entryType}, start_date = ${input.startDate},
         end_date = ${input.endDate}, private_booking_name = ${input.privateBookingName ?? null},
+        payment_amount = ${input.paymentAmount ?? null},
         private_contact = ${input.privateContact ?? null}, private_note = ${input.privateNote ?? null},
         booking_source = ${input.bookingSource ?? null}, sync_to_airbnb = ${input.syncToAirbnb}, updated_at = now()
       where id = ${entryId} and property_id = ${input.propertyId} and active returning id
@@ -106,7 +107,7 @@ export async function updateLocalEntry(entryId: string, input: LocalEntryInput, 
     await tx`
       insert into public.audit_log (property_id, actor_id, action, entity_type, entity_id, changes)
       values (${input.propertyId}, ${userId}, 'updated', 'local_calendar_entry', ${entryId},
-        ${tx.json({ entryType: input.entryType, startDate: input.startDate, endDate: input.endDate, syncToAirbnb: input.syncToAirbnb })})
+        ${tx.json({ entryType: input.entryType, startDate: input.startDate, endDate: input.endDate, syncToAirbnb: input.syncToAirbnb, paymentRecorded: input.paymentAmount != null })})
     `;
   });
 }

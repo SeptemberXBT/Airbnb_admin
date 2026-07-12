@@ -5,7 +5,7 @@
 1. Create a Supabase project in the India region when available.
 2. Apply the migrations in filename order: `0001_initial.sql`,
    `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
-   `0004_shared_admin_workspace.sql`.
+   `0004_shared_admin_workspace.sql`, then `0005_manual_entry_payment.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -19,6 +19,10 @@ supported from the Today queue.
 Migration `0004` shares every property with every Supabase Auth user in this
 dedicated project, including future users and properties. Keep public signup
 disabled so only accounts created by the Noir Haus owner receive access.
+
+Migration `0005` adds private payment storage for manual blocks and direct
+reservations. Apply it before deploying application code that writes or exports
+payment data.
 
 ## 2. Secrets
 
@@ -77,6 +81,9 @@ errors. Send `/var/log/haven-sync.log` to the server's existing monitoring.
    then from Airbnb after Airbnb refreshes.
 8. Confirm a real same-day turnover produces the correct cleaning order.
 9. Review sync health and audit history before adding more properties.
+10. Create a two-night manual entry with a guest and INR 1,000 total payment.
+    Export both dates and confirm the property column contains INR 500.00 on
+    each occupied date.
 
 Airbnb controls its own import interval. The application cannot force an Airbnb
 refresh or create an Airbnb reservation, payout, message thread, or confirmation.

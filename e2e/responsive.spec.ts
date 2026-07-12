@@ -50,6 +50,20 @@ test("mobile date editing uses a bottom sheet with touch-size controls", async (
   await page.screenshot({ path: "artifacts/screenshots/calendar-mobile-bottom-sheet.png", caret: "initial" });
 });
 
+test("mobile manual booking export uses touch-size controls", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/calendar?zoom=14");
+  await page.getByRole("button", { name: "Export CSV" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Start date")).toHaveValue(/\d{4}-\d{2}-\d{2}/);
+  const downloadBox = await dialog.getByRole("button", { name: "Download CSV" }).boundingBox();
+  expect(downloadBox?.height).toBeGreaterThanOrEqual(44);
+  const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(pageOverflow).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: "artifacts/screenshots/calendar-mobile-export-dialog.png", caret: "initial" });
+});
+
 test("today queue provides large mobile quick actions", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/today");

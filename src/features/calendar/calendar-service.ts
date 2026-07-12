@@ -42,11 +42,11 @@ export async function getCalendarData(userId: string, startDate: string, days: n
   const local = await sql<{
     id: string; property_id: string; listing_id: string | null; entry_type: CalendarEntry["kind"];
     start_date: string; end_date: string; private_booking_name: string | null; private_contact: string | null;
-    private_note: string | null; sync_to_airbnb: boolean; expected_checkin_time: string | null;
+    private_note: string | null; payment_amount: string | null; sync_to_airbnb: boolean; expected_checkin_time: string | null;
     expected_checkout_time: string | null; cleaning_duration_minutes: number | null;
   }[]>`
     select e.id, e.property_id, e.listing_id, e.entry_type, e.start_date::text, e.end_date::text,
-      e.private_booking_name, e.private_contact, e.private_note, e.sync_to_airbnb,
+      e.private_booking_name, e.private_contact, e.private_note, e.payment_amount::text, e.sync_to_airbnb,
       o.expected_checkin_time::text, o.expected_checkout_time::text, o.cleaning_duration_minutes
     from public.local_calendar_entries e left join public.operation_overrides o on o.local_entry_id = e.id
     where e.property_id in ${sql(propertyIds)} and e.active and e.start_date < ${viewEnd} and e.end_date > ${startDate}
@@ -59,7 +59,7 @@ export async function getCalendarData(userId: string, startDate: string, days: n
   for (const row of external) add(row.property_id, {
     id: row.id, propertyId: row.property_id, listingId: row.listing_id, source: "airbnb", kind: row.event_type,
     label: row.event_type === "reservation" ? "Airbnb reservation" : row.event_type === "unavailable" ? "Airbnb unavailable" : "Airbnb event",
-    startDate: row.start_date, endDate: row.end_date, privateBookingName: null, privateContact: null,
+    startDate: row.start_date, endDate: row.end_date, privateBookingName: null, paymentAmount: null, privateContact: null,
     privateNote: row.operational_note, expectedCheckinTime: row.expected_checkin_time?.slice(0, 5) ?? null,
     expectedCheckoutTime: row.expected_checkout_time?.slice(0, 5) ?? null,
     cleaningDurationMinutes: row.cleaning_duration_minutes, reservationUrl: row.sanitized_reservation_url,
@@ -69,6 +69,7 @@ export async function getCalendarData(userId: string, startDate: string, days: n
     id: row.id, propertyId: row.property_id, listingId: row.listing_id, source: "local", kind: row.entry_type,
     label: row.entry_type === "direct_reservation" ? "Direct reservation" : "Blocked",
     startDate: row.start_date, endDate: row.end_date, privateBookingName: row.private_booking_name,
+    paymentAmount: row.payment_amount,
     privateContact: row.private_contact, privateNote: row.private_note,
     expectedCheckinTime: row.expected_checkin_time?.slice(0, 5) ?? null,
     expectedCheckoutTime: row.expected_checkout_time?.slice(0, 5) ?? null,
