@@ -39,12 +39,13 @@ export function buildCleaningSchedule(candidates: CleaningCandidate[], now: Date
     .filter((task) => task.status === "cleaning_now")
     .sort((a, b) => (a.actualStart?.getTime() ?? 0) - (b.actualStart?.getTime() ?? 0) || a.id.localeCompare(b.id));
   const finished = candidates.filter((task) => task.status === "ready" || task.status === "skipped");
-  const queued = candidates
-    .filter((task) => !["cleaning_now", "ready", "skipped"].includes(task.status))
-    .sort((a, b) => a.readyDeadline.getTime() - b.readyDeadline.getTime()
-      || addMinutes(a.releaseTime, a.delayMinutes).getTime() - addMinutes(b.releaseTime, b.delayMinutes).getTime()
-      || a.propertyName.localeCompare(b.propertyName)
-      || a.id.localeCompare(b.id));
+  const queued = candidates.filter((task) => !["cleaning_now", "ready", "skipped"].includes(task.status));
+  const effectiveRelease = (task: CleaningCandidate) => addMinutes(task.releaseTime, task.delayMinutes);
+  const byDeadline = (a: CleaningCandidate, b: CleaningCandidate) =>
+    a.readyDeadline.getTime() - b.readyDeadline.getTime()
+    || effectiveRelease(a).getTime() - effectiveRelease(b).getTime()
+    || a.propertyName.localeCompare(b.propertyName)
+    || a.id.localeCompare(b.id);
 
   let cursor = new Date(now);
   const scheduled: ScheduledCleaningTask[] = [];
@@ -54,9 +55,19 @@ export function buildCleaningSchedule(candidates: CleaningCandidate[], now: Date
     cursor = later(cursor, plannedEnd);
     scheduled.push({ ...task, plannedStart, plannedEnd, warningLevel: warning(task, plannedEnd, now) });
   }
-  for (const task of queued) {
-    const effectiveRelease = addMinutes(task.releaseTime, task.delayMinutes);
-    const plannedStart = later(cursor, effectiveRelease);
+  const remaining = [...queued];
+  while (remaining.length) {
+    let available = remaining.filter((task) => effectiveRelease(task) <= cursor).sort(byDeadline);
+    if (!available.length) {
+      const nextRelease = remaining.reduce((earliest, task) =>
+        effectiveRelease(task) < earliest ? effectiveRelease(task) : earliest,
+      effectiveRelease(remaining[0]));
+      cursor = nextRelease;
+      available = remaining.filter((task) => effectiveRelease(task) <= cursor).sort(byDeadline);
+    }
+    const task = available[0];
+    remaining.splice(remaining.findIndex((candidate) => candidate.id === task.id), 1);
+    const plannedStart = new Date(cursor);
     const plannedEnd = addMinutes(plannedStart, task.durationMinutes);
     cursor = plannedEnd;
     scheduled.push({ ...task, plannedStart, plannedEnd, warningLevel: warning(task, plannedEnd, now) });

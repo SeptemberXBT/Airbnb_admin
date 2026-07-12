@@ -10,8 +10,13 @@ export default async function TodayPage() {
   const tasks = await getCleaningQueue(user.id, serviceDate, now);
   return (
     <div className="workspace workspace--queue">
-      <header className="page-header"><div><p className="eyebrow">{formatInTimeZone(now, "Asia/Kolkata", "EEEE, d MMMM")}</p><h1>Today&apos;s cleaning</h1></div><span className="queue-clock">IST · {formatInTimeZone(now, "Asia/Kolkata", "h:mm a")}</span></header>
-      <TodayQueue tasks={tasks} demoMode={process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production"} />
+      <TodayQueue
+        tasks={tasks}
+        serviceDate={serviceDate}
+        dateLabel={formatInTimeZone(now, "Asia/Kolkata", "EEEE, d MMMM")}
+        clock={formatInTimeZone(now, "Asia/Kolkata", "h:mm a")}
+        demoMode={process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production"}
+      />
     </div>
   );
 }

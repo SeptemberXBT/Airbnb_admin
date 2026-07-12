@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Haven Operations",
+  title: "Noir Haus Admin",
   description: "Private short-term rental operations calendar",
   robots: { index: false, follow: false },
 };

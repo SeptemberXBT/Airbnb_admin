@@ -19,14 +19,15 @@ describe("turnover derivation", () => {
     expect(task.durationMinutes).toBe(20);
   });
 
-  it("uses housekeeping cutoff without an arrival and working-day release when already vacant", () => {
-    const [outgoingOnly, vacant] = deriveTurnovers([
+  it("uses housekeeping cutoff without an arrival and ignores check-in-only dates", () => {
+    const tasks = deriveTurnovers([
       { ...base, id: "out", reservations: [{ key: "external:out", startDate: "2026-07-09", endDate: "2026-07-11", expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null }] },
       { ...base, id: "vacant", reservations: [{ key: "external:in", startDate: "2026-07-11", endDate: "2026-07-12", expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null }] },
     ], "2026-07-11");
+    expect(tasks).toHaveLength(1);
+    const [outgoingOnly] = tasks;
     expect(outgoingOnly.guestArrivalTime).toBeNull();
     expect(outgoingOnly.readyDeadline.toISOString()).toBe("2026-07-11T11:30:00.000Z");
-    expect(vacant.releaseTime.toISOString()).toBe("2026-07-11T02:30:00.000Z");
   });
 
   it("derives only one task for linked listing reservations on one physical property", () => {

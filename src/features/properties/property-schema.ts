@@ -1,14 +1,10 @@
 import { z } from "zod";
 import { isAllowedAirbnbCalendarUrl } from "@/lib/ical/feed-url";
 
-const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
-
 export const propertyListingSchema = z.object({
   name: z.string().trim().min(2).max(100),
   displayName: z.string().trim().min(2).max(120),
   timezone: z.literal("Asia/Kolkata"),
-  defaultCheckinTime: z.string().regex(timePattern),
-  defaultCheckoutTime: z.string().regex(timePattern),
   defaultCleaningMinutes: z.coerce.number().int().min(5).max(480),
   checkoutBufferMinutes: z.coerce.number().int().min(0).max(120),
   checkinBufferMinutes: z.coerce.number().int().min(0).max(120),

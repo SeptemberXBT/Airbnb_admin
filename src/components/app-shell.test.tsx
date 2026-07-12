@@ -14,6 +14,7 @@ describe("AppShell", () => {
     if (!AppShell) return;
 
     render(<AppShell><p>Workspace</p></AppShell>);
+    expect(screen.getByText("Noir Haus")).toBeVisible();
     expect(screen.getAllByRole("link", { name: /calendar/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /today/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /properties/i }).length).toBeGreaterThan(0);

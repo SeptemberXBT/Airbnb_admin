@@ -4,8 +4,8 @@ import {
   Building2,
   CalendarDays,
   ClipboardCheck,
+  House,
   Settings,
-  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -43,9 +43,9 @@ export function AppShell({ children }: PropsWithChildren) {
     <div className="app-shell">
       <ConnectionStatus />
       <aside className="sidebar">
-        <Link href="/calendar" className="brand" aria-label="Haven Ops calendar">
-          <span className="brand__mark"><Sparkles aria-hidden="true" size={18} /></span>
-          <span><strong>Haven</strong><small>Operations</small></span>
+        <Link href="/calendar" className="brand" aria-label="Noir Haus Admin calendar">
+          <span className="brand__mark"><House aria-hidden="true" size={18} /></span>
+          <span><strong>Noir Haus</strong><small>Admin</small></span>
         </Link>
         <nav className="side-nav" aria-label="Primary navigation">
           <NavigationLinks />
