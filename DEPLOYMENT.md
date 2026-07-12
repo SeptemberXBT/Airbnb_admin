@@ -4,7 +4,8 @@
 
 1. Create a Supabase project in the India region when available.
 2. Apply the migrations in filename order: `0001_initial.sql`,
-   `0002_cleaning_task_identity.sql`, then `0003_universal_operation_times.sql`.
+   `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
+   `0004_shared_admin_workspace.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -14,6 +15,10 @@ backup before using a rollback in a live project.
 Migration `0003` normalizes every property to an 11:00 AM checkout and 1:00 PM
 check-in. Reservation-level early check-in and late checkout overrides remain
 supported from the Today queue.
+
+Migration `0004` shares every property with every Supabase Auth user in this
+dedicated project, including future users and properties. Keep public signup
+disabled so only accounts created by the Noir Haus owner receive access.
 
 ## 2. Secrets
 

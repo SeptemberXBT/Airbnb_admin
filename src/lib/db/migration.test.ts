@@ -45,4 +45,13 @@ describe("initial database migration", () => {
     expect(sql).toMatch(/check \(default_checkin_time = '13:00'::time\)/i);
     expect(sql).toMatch(/check \(default_checkout_time = '11:00'::time\)/i);
   });
+
+  it("shares every property with approved Auth users and deduplicates creation requests", async () => {
+    const sql = await readFile(path.join(process.cwd(), "supabase/migrations/0004_shared_admin_workspace.sql"), "utf8");
+    expect(sql).toMatch(/creation_request_id uuid/i);
+    expect(sql).toMatch(/cross join auth\.users/i);
+    expect(sql).toMatch(/after insert on auth\.users/i);
+    expect(sql).toMatch(/after insert on public\.properties/i);
+    expect(sql).toMatch(/on conflict \(property_id, user_id\) do nothing/i);
+  });
 });
