@@ -54,6 +54,7 @@ describe("PropertyManager mutation feedback", () => {
     await userEvent.click(screen.getByText("Add property"));
     const details = screen.getByText("Add property").closest("details");
     if (!details) throw new Error("Missing add property disclosure");
+    expect(details.querySelector('[name="checkinBufferMinutes"]')).not.toBeInTheDocument();
     fillPropertyForm(details);
     const save = screen.getByRole("button", { name: "Save property" });
     const click = userEvent.click(save);
@@ -65,7 +66,9 @@ describe("PropertyManager mutation feedback", () => {
     await click;
     await waitFor(() => expect(details).not.toHaveAttribute("open"));
     expect(screen.getByText("Garden Suite")).toBeVisible();
-    expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toHaveLength(1);
+    const posts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0][1]?.body))).toMatchObject({ checkinBufferMinutes: 5 });
     expect(refresh).toHaveBeenCalled();
   });
 
