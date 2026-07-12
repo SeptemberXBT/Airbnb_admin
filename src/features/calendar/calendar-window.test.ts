@@ -23,6 +23,7 @@ const entry = (id: string, startDate: string, endDate: string): CalendarProperty
   startDate,
   endDate,
   privateBookingName: null,
+  paymentAmount: null,
   privateContact: null,
   privateNote: null,
   expectedCheckinTime: null,
@@ -55,7 +56,7 @@ describe("calendar window state", () => {
 
   it("changes its version when shared calendar data changes", () => {
     const original = property([entry("a", "2026-07-10", "2026-07-13")]);
-    const changed = property([{ ...entry("a", "2026-07-10", "2026-07-14"), expectedCheckoutTime: "12:00" }]);
+    const changed = property([{ ...entry("a", "2026-07-10", "2026-07-13"), paymentAmount: "12500.50" }]);
 
     expect(calendarWindowVersion([changed])).not.toBe(calendarWindowVersion([original]));
   });
