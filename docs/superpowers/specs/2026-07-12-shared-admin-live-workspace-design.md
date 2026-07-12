@@ -40,6 +40,25 @@ Database writes remain authoritative. The acting screen also applies the
 successful action locally so it does not appear stuck while the server refresh
 is in flight. The periodic refresh reconciles both admins with Supabase.
 
+## Site-Wide Mutation Feedback
+
+Every write action in Calendar, Today, Properties, and Settings will follow the
+same visible lifecycle:
+
+1. Enter a pending state immediately and disable the action that initiated the
+   request.
+2. On success, update the affected client state or refetch its focused data
+   endpoint immediately, then request a server refresh.
+3. Close successful editors and disclosures, while keeping feedback visible on
+   the page.
+4. On failure, preserve the entered data, re-enable the action, and show a clear
+   error without changing the displayed record.
+5. Reconcile all pages through the eight-second shared refresh controller.
+
+Calendar saves, archives, manual sync, property feed controls, cleaning actions,
+and property creation/editing are all included. No successful action may depend
+on a hard browser refresh before its result becomes visible.
+
 ## Today Queue
 
 The Today queue will maintain local task state synchronized from refreshed
@@ -100,7 +119,8 @@ destructive data operation.
 - Property component tests cover pending disablement, successful close/reset,
   failure retention, and repeated-submit prevention.
 - Browser tests exercise completing a cleaning task, expanding completed work,
-  and saving one property without a duplicate request.
+  saving and archiving calendar entries, toggling property feed controls, and
+  saving one property without a duplicate request or hard refresh.
 - Run unit tests, lint, type checking, production build, and responsive
   Playwright verification before release.
 
