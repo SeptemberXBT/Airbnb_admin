@@ -5,7 +5,8 @@
 1. Create a Supabase project in the India region when available.
 2. Apply the migrations in filename order: `0001_initial.sql`,
    `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
-   `0004_shared_admin_workspace.sql`, then `0005_manual_entry_payment.sql`.
+   `0004_shared_admin_workspace.sql`, `0005_manual_entry_payment.sql`, then
+   `0006_preserve_airbnb_history.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -23,6 +24,12 @@ disabled so only accounts created by the Noir Haus owner receive access.
 Migration `0005` adds private payment storage for manual blocks and direct
 reservations. Apply it before deploying application code that writes or exports
 payment data.
+
+Migration `0006` retains completed Airbnb events after Airbnb removes them from
+its current iCal feed. Apply it before deploying application code that queries
+the new `historical` column. It safely restores previously archived rows only
+when the database proves they were still observed on or after check-in; it
+cannot reconstruct stays that the application never imported.
 
 ## 2. Secrets
 

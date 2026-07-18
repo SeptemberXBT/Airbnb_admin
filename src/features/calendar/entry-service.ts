@@ -33,7 +33,7 @@ async function hasOverlap(input: LocalEntryInput, excludeId?: string) {
         and e.start_date < ${input.endDate} and e.end_date > ${input.startDate}
       union all
       select e.id from public.external_calendar_events e join public.listings l on l.id = e.listing_id
-      where l.property_id = ${input.propertyId} and e.active
+      where l.property_id = ${input.propertyId} and (e.active or e.historical)
         and e.start_date < ${input.endDate} and e.end_date > ${input.startDate}
     ) conflicts limit 1
   `;
