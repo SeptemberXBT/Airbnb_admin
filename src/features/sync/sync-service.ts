@@ -1,4 +1,5 @@
 import "server-only";
+import { formatInTimeZone } from "date-fns-tz";
 import { getDb } from "@/lib/db/client";
 import { parseAirbnbCalendar, type NormalizedCalendarEvent } from "@/lib/ical/parser";
 import { openSecret } from "@/lib/security/secrets";
@@ -11,13 +12,20 @@ type SyncSource = "scheduled" | "manual";
 
 async function applyReconciliation(listingId: string, incoming: NormalizedCalendarEvent[]) {
   const sql = getDb();
-  const rows = await sql<{ id: string; source_uid: string; source_content_hash: string; active: boolean }[]>`
-    select id, source_uid, source_content_hash, active
+  const rows = await sql<{
+    id: string; source_uid: string; source_content_hash: string; start_date: string;
+    end_date: string; active: boolean; historical: boolean;
+  }[]>`
+    select id, source_uid, source_content_hash, start_date::text, end_date::text, active, historical
     from public.external_calendar_events where listing_id = ${listingId}
   `;
   const plan = planReconciliation(
-    rows.map((row) => ({ id: row.id, sourceUid: row.source_uid, contentHash: row.source_content_hash, active: row.active })),
+    rows.map((row) => ({
+      id: row.id, sourceUid: row.source_uid, contentHash: row.source_content_hash,
+      startDate: row.start_date, endDate: row.end_date, active: row.active, historical: row.historical,
+    })),
     incoming,
+    formatInTimeZone(new Date(), "Asia/Kolkata", "yyyy-MM-dd"),
   );
 
   await sql.begin(async (tx) => {
@@ -25,16 +33,16 @@ async function applyReconciliation(listingId: string, incoming: NormalizedCalend
       await tx`
         insert into public.external_calendar_events (
           listing_id, source_uid, event_type, start_date, end_date,
-          sanitized_reservation_url, source_content_hash
+          sanitized_reservation_url, source_content_hash, active, historical, archived_at
         ) values (
           ${listingId}, ${event.sourceUid}, ${event.eventType}, ${event.startDate}, ${event.endDate},
-          ${event.sanitizedReservationUrl}, ${event.contentHash}
+          ${event.sanitizedReservationUrl}, ${event.contentHash}, true, false, null
         )
         on conflict (listing_id, source_uid) do update set
           event_type = excluded.event_type, start_date = excluded.start_date,
           end_date = excluded.end_date, sanitized_reservation_url = excluded.sanitized_reservation_url,
           source_content_hash = excluded.source_content_hash, last_seen_at = now(),
-          active = true, archived_at = null
+          active = true, historical = false, archived_at = null
       `;
     }
     for (const { existingId, event } of plan.update) {
@@ -43,13 +51,19 @@ async function applyReconciliation(listingId: string, incoming: NormalizedCalend
           start_date = ${event.startDate}, end_date = ${event.endDate},
           sanitized_reservation_url = ${event.sanitizedReservationUrl},
           source_content_hash = ${event.contentHash}, last_seen_at = now(),
-          active = true, archived_at = null where id = ${existingId}
+          active = true, historical = false, archived_at = null where id = ${existingId}
       `;
     }
     if (plan.archive.length) {
       await tx`
-        update public.external_calendar_events set active = false, archived_at = coalesce(archived_at, now())
+        update public.external_calendar_events set active = false, historical = false, archived_at = coalesce(archived_at, now())
         where id in ${tx(plan.archive)}
+      `;
+    }
+    if (plan.retainHistory.length) {
+      await tx`
+        update public.external_calendar_events set active = false, historical = true, archived_at = coalesce(archived_at, now())
+        where id in ${tx(plan.retainHistory)}
       `;
     }
     if (incoming.length) {
