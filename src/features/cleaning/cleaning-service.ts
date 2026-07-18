@@ -64,7 +64,7 @@ export async function getCleaningQueue(userId: string, serviceDate: string, now 
       o.expected_checkout_time::text, o.cleaning_duration_minutes
     from public.external_calendar_events e join public.listings l on l.id = e.listing_id
     left join public.operation_overrides o on o.external_event_id = e.id
-    where l.property_id in ${sql(propertyIds)} and e.active and e.event_type in ${sql(externalTurnoverTypes)}
+    where l.property_id in ${sql(propertyIds)} and (e.active or e.historical) and e.event_type in ${sql(externalTurnoverTypes)}
       and (e.start_date = ${serviceDate} or e.end_date = ${serviceDate})
   `, sql<{
     property_id: string; id: string; start_date: string; end_date: string;

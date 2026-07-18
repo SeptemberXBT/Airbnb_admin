@@ -37,7 +37,7 @@ export async function getCalendarData(userId: string, startDate: string, days: n
       o.cleaning_duration_minutes, o.operational_note
     from public.external_calendar_events e join public.listings l on l.id = e.listing_id
     left join public.operation_overrides o on o.external_event_id = e.id
-    where l.property_id in ${sql(propertyIds)} and e.active and e.start_date < ${viewEnd} and e.end_date > ${startDate}
+    where l.property_id in ${sql(propertyIds)} and (e.active or e.historical) and e.start_date < ${viewEnd} and e.end_date > ${startDate}
   `;
   const local = await sql<{
     id: string; property_id: string; listing_id: string | null; entry_type: CalendarEntry["kind"];
