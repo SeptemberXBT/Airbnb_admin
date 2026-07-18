@@ -62,4 +62,17 @@ describe("initial database migration", () => {
     expect(up).toMatch(/payment_amount >= 0/i);
     expect(down).toMatch(/drop column payment_amount/i);
   });
+
+  it("retains safely observed completed Airbnb events", async () => {
+    const up = await readFile(path.join(process.cwd(), "supabase/migrations/0006_preserve_airbnb_history.sql"), "utf8");
+    const down = await readFile(path.join(process.cwd(), "supabase/migrations/0006_preserve_airbnb_history.down.sql"), "utf8");
+    expect(up).toMatch(/historical boolean not null default false/i);
+    expect(up).toMatch(/not \(active and historical\)/i);
+    expect(up).toMatch(/end_date <= \(now\(\) at time zone 'Asia\/Kolkata'\)::date/i);
+    expect(up).toMatch(/\(last_seen_at at time zone 'Asia\/Kolkata'\)::date >= start_date/i);
+    expect(up).toMatch(/where active or historical/i);
+    expect(down).toMatch(/drop index if exists public\.external_calendar_events_visible_range_idx/i);
+    expect(down).toMatch(/drop constraint if exists external_calendar_events_state_check/i);
+    expect(down).toMatch(/drop column if exists historical/i);
+  });
 });
