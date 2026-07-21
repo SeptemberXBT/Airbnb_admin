@@ -75,4 +75,50 @@ describe("initial database migration", () => {
     expect(down).toMatch(/drop constraint if exists external_calendar_events_state_check/i);
     expect(down).toMatch(/drop column if exists historical/i);
   });
+
+  it("adds the public booking schema with reclaimable active inventory", async () => {
+    let up = "";
+    let down = "";
+
+    try {
+      [up, down] = await Promise.all([
+        readFile(path.join(process.cwd(), "supabase/migrations/0007_public_booking.sql"), "utf8"),
+        readFile(path.join(process.cwd(), "supabase/migrations/0007_public_booking.down.sql"), "utf8"),
+      ]);
+    } catch {
+      up = "";
+      down = "";
+    }
+
+    const tables = [
+      "property_rates",
+      "property_rate_overrides",
+      "bookings",
+      "booking_night_prices",
+      "inventory_nights",
+      "booking_attempts",
+      "api_request_nonces",
+      "payment_events",
+      "payment_jobs",
+      "notification_outbox",
+      "booking_events",
+    ];
+
+    for (const table of tables) {
+      expect(up).toMatch(new RegExp(`create table public\\.${table}`, "i"));
+      expect(up).toMatch(new RegExp(`alter table public\\.${table} enable row level security`, "i"));
+      expect(up).toMatch(new RegExp(`revoke all on public\\.${table} from anon`, "i"));
+      expect(up).toMatch(new RegExp(`revoke all on public\\.${table} from authenticated`, "i"));
+    }
+
+    expect(up).toMatch(
+      /create unique index inventory_nights_one_active_owner[\s\S]*\(property_id, stay_date\)[\s\S]*where status = 'active'/i,
+    );
+    expect(up).toMatch(/alter column created_by drop not null/i);
+    expect(up).toMatch(/created_by is not null or booking_id is not null/i);
+    expect(up).toMatch(/source_kind[\s\S]*booking_id[\s\S]*local_entry_id[\s\S]*external_event_id/i);
+    expect(up).toMatch(/exactly_one_inventory_source_target/i);
+    expect(down).toMatch(/drop index if exists public\.inventory_nights_one_active_owner/i);
+    expect(down).toMatch(/alter column created_by set not null/i);
+  });
 });
