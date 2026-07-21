@@ -133,3 +133,11 @@ credentials.
 
 Airbnb controls its own import interval. The application cannot force an Airbnb
 refresh or create an Airbnb reservation, payout, message thread, or confirmation.
+
+## 6. Website booking Test Mode
+
+Use [`docs/booking-test-mode-runbook.md`](./docs/booking-test-mode-runbook.md)
+for the staged migration, isolated Preview setup, HMAC rotation, Razorpay and
+ZeptoMail configuration, firewall limits, acceptance tests, monitoring, and
+rollback order. The production booking flag stays off until a separate owner
+approval is recorded after Preview acceptance.
