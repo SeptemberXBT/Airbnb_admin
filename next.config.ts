@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import { parseInventoryLedgerMode } from "./src/features/inventory/inventory-mode";
+
+parseInventoryLedgerMode(process.env.INVENTORY_LEDGER_MODE);
 
 const isDevelopment = process.env.NODE_ENV !== "production";
 const contentSecurityPolicy = [

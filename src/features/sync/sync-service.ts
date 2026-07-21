@@ -92,25 +92,6 @@ export function createSyncReconciliationService(sql: SyncSql, inventoryMode: Inv
           `;
         }
 
-        if (bounds && inventoryMode === "enforced") {
-          await tx`
-            update public.inventory_nights i
-            set status = 'released', release_reason = 'airbnb_calendar_block', released_at = now(), updated_at = now()
-            from public.bookings b
-            where i.property_id = ${propertyId} and i.booking_id = b.id
-              and i.source_kind = 'website_hold' and i.status = 'active'
-              and b.razorpay_payment_id is null
-              and b.status in ('processing', 'held', 'payment_pending')
-              and exists (
-                select 1 from public.external_calendar_events e
-                join public.listings l on l.id = e.listing_id
-                where l.property_id = ${propertyId} and e.active = true and e.archived_at is null
-                  and e.event_type in ('unavailable', 'unknown')
-                  and e.start_date <= i.stay_date and e.end_date > i.stay_date
-              )
-          `;
-        }
-
         const collisionRows = bounds ? await tx<{ booking_id: string; stay_dates: string[] }[]>`
           select i.booking_id, array_agg(distinct i.stay_date::text order by i.stay_date::text) as stay_dates
           from public.inventory_nights i
@@ -126,6 +107,59 @@ export function createSyncReconciliationService(sql: SyncSql, inventoryMode: Inv
           group by i.booking_id
           order by i.booking_id
         ` : [];
+
+        const displacedRows = bounds && inventoryMode === "enforced"
+          ? await tx<{ booking_id: string; stay_dates: string[] }[]>`
+              select i.booking_id, array_agg(distinct i.stay_date::text order by i.stay_date::text) as stay_dates
+              from public.inventory_nights i
+              join public.bookings b on b.id = i.booking_id
+              where i.property_id = ${propertyId}
+                and i.source_kind = 'website_hold' and i.status = 'active'
+                and b.razorpay_payment_id is null
+                and b.status in ('processing', 'held')
+                and exists (
+                  select 1 from public.external_calendar_events e
+                  join public.listings l on l.id = e.listing_id
+                  where l.property_id = ${propertyId} and e.active = true and e.archived_at is null
+                    and e.event_type in ('unavailable', 'unknown')
+                    and e.start_date <= i.stay_date and e.end_date > i.stay_date
+                )
+              group by i.booking_id
+              order by i.booking_id
+            `
+          : [];
+
+        const collisionBookingIds = new Set(collisionRows.map((collision) => collision.booking_id));
+        for (const displaced of displacedRows) {
+          if (collisionBookingIds.has(displaced.booking_id)) continue;
+          const [expired] = await tx<{ id: string }[]>`
+            update public.bookings
+            set status = 'expired', updated_at = now()
+            where id = ${displaced.booking_id}
+              and razorpay_payment_id is null
+              and status in ('processing', 'held')
+            returning id
+          `;
+          if (!expired) continue;
+          await tx`
+            update public.inventory_nights
+            set status = 'released', release_reason = 'airbnb_calendar_block', released_at = now(), updated_at = now()
+            where property_id = ${propertyId} and booking_id = ${displaced.booking_id}
+              and source_kind = 'website_hold' and status = 'active'
+          `;
+          const metadata = tx.json({ stayDates: displaced.stay_dates, reason: "airbnb_calendar_block" });
+          await tx`
+            insert into public.booking_events (property_id, booking_id, event_type, metadata)
+            values (${propertyId}, ${displaced.booking_id}, 'airbnb_calendar_block_displaced_hold', ${metadata})
+          `;
+          await tx`
+            insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+            values (
+              ${propertyId}, 'airbnb_calendar_block_displaced_hold', 'website_booking',
+              ${displaced.booking_id}, ${metadata}
+            )
+          `;
+        }
 
         if (bounds) {
           await reconcilePropertyNights(tx, propertyId, bounds.startDate, bounds.endDate);

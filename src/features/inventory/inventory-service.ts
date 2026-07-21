@@ -118,13 +118,16 @@ export async function releaseExpiredHolds(
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error("INVALID_NOW");
   await requirePropertyLock(tx, propertyId);
   const released = await tx<{ id: string }[]>`
-    update public.inventory_nights
+    update public.inventory_nights i
     set status = 'released', release_reason = 'hold_expired', released_at = ${now}, updated_at = ${now}
-    where property_id = ${propertyId}
-      and source_kind = 'website_hold'
-      and status = 'active'
-      and expires_at <= ${now}
-    returning id
+    from public.bookings b
+    where i.property_id = ${propertyId}
+      and i.booking_id = b.id
+      and i.source_kind = 'website_hold'
+      and i.status = 'active'
+      and i.expires_at <= ${now}
+      and b.status = 'expired'
+    returning i.id
   `;
   return released.length;
 }
@@ -223,7 +226,6 @@ export function createInventoryService(sql: InventorySql) {
       return sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(hashtextextended(${propertyId}, 0))`;
         await tx`select set_config(${LOCKED_PROPERTY_SETTING}, ${propertyId}, true)`;
-        await releaseExpiredHolds(tx, propertyId, new Date());
         return callback(tx);
       });
     },

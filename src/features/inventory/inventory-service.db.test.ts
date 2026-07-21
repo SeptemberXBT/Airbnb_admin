@@ -130,12 +130,37 @@ describe("serialized nightly inventory", () => {
     }));
 
     await inventory.withPropertyInventory(propertyId, async (tx) => {
+      expect(await releaseExpiredHolds(tx, propertyId, new Date("2026-08-14T10:01:00.000Z"))).toBe(0);
+      await tx`update public.bookings set status = 'expired', updated_at = now() where id = ${expiredBookingId}`;
       expect(await releaseExpiredHolds(tx, propertyId, new Date("2026-08-14T10:01:00.000Z"))).toBe(1);
       await claimStayNights(tx, { propertyId, stayDates: ["2026-08-14"], sourceKind: "website_booking", sourceId: nextBookingId });
     });
 
     expect(await activeNightsForSource(expiredBookingId)).toEqual([]);
     expect(await activeNightsForSource(nextBookingId)).toEqual(["2026-08-14"]);
+  });
+
+  it("never releases an expired hold merely because another inventory transaction starts", async () => {
+    const propertyId = await createProperty("Ambiguous Payment Suite");
+    const bookingId = await createBooking(propertyId);
+    await inventory.withPropertyInventory(propertyId, (tx) => claimStayNights(tx, {
+      propertyId,
+      stayDates: ["2026-08-14"],
+      sourceKind: "website_hold",
+      sourceId: bookingId,
+      expiresAt: new Date("2020-01-01T00:00:00.000Z"),
+    }));
+
+    const activeDuringUnrelatedTransaction = await inventory.withPropertyInventory(propertyId, async (tx) => {
+      const [{ count }] = await tx<{ count: number }[]>`
+        select count(*)::int as count from public.inventory_nights
+        where booking_id = ${bookingId} and status = 'active'
+      `;
+      return count;
+    });
+
+    expect(activeDuringUnrelatedTransaction).toBe(1);
+    expect(await activeNightsForSource(bookingId)).toEqual(["2026-08-14"]);
   });
 
   it("allows separate properties to claim the same date", async () => {

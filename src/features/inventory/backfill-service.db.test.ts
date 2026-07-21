@@ -142,6 +142,18 @@ describe("inventory backfill and iCal application", () => {
     await createSyncReconciliationService(testSql, "enforced")
       .applyReconciliation(listingId, [incoming("airbnb-unavailable", "unknown")], "2026-07-21");
     expect((await activeNights()).every((night) => night.source_kind === "airbnb_unknown")).toBe(true);
+    const [displacedBooking] = await testSql<{ status: string }[]>`
+      select status from public.bookings where id = ${unpaidBookingId}
+    `;
+    expect(displacedBooking.status).toBe("expired");
+    const [events] = await testSql<{ booking_events: number; alerts: number }[]>`
+      select
+        (select count(*)::int from public.booking_events
+          where booking_id = ${unpaidBookingId} and event_type = 'airbnb_calendar_block_displaced_hold') as booking_events,
+        (select count(*)::int from public.audit_log
+          where entity_id = ${unpaidBookingId} and action = 'airbnb_calendar_block_displaced_hold') as alerts
+    `;
+    expect(events).toEqual({ booking_events: 1, alerts: 1 });
 
     await resetDb();
     await testSql`insert into auth.users (id, email) values (${USER_ID}, 'owner@example.test')`;
@@ -163,6 +175,56 @@ describe("inventory backfill and iCal application", () => {
     await createSyncReconciliationService(testSql, "enforced")
       .applyReconciliation(listingId, [incoming("paid-unavailable", "unavailable")], "2026-07-21");
     expect((await activeNights()).every((night) => night.source_kind === "website_hold")).toBe(true);
+  });
+
+  it("reports a reservation collision before an unavailable event displaces the same hold", async () => {
+    const bookingId = await addBooking();
+    const inventory = createInventoryService(testSql);
+    await inventory.withPropertyInventory(propertyId, (tx) => claimStayNights(tx, {
+      propertyId,
+      stayDates: ["2026-08-14", "2026-08-15"],
+      sourceKind: "website_hold",
+      sourceId: bookingId,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    }));
+
+    const result = await createSyncReconciliationService(testSql, "enforced").applyReconciliation(
+      listingId,
+      [
+        incoming("airbnb-reservation-and-block", "reservation"),
+        incoming("airbnb-unavailable-and-reservation", "unknown"),
+      ],
+      "2026-07-21",
+    );
+
+    expect(result.collisions).toEqual([{ bookingId, stayDates: ["2026-08-14", "2026-08-15"] }]);
+    expect((await activeNights()).every((night) => night.source_kind === "website_hold")).toBe(true);
+    const [booking] = await testSql<{ status: string; cancellation_reason: string | null }[]>`
+      select status, cancellation_reason from public.bookings where id = ${bookingId}
+    `;
+    expect(booking).toEqual({ status: "processing", cancellation_reason: null });
+  });
+
+  it("retains payment-pending inventory when unavailable is not a definitive payment failure", async () => {
+    const bookingId = await addBooking();
+    await testSql`update public.bookings set status = 'payment_pending' where id = ${bookingId}`;
+    const inventory = createInventoryService(testSql);
+    await inventory.withPropertyInventory(propertyId, (tx) => claimStayNights(tx, {
+      propertyId,
+      stayDates: ["2026-08-14", "2026-08-15"],
+      sourceKind: "website_hold",
+      sourceId: bookingId,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    }));
+
+    await createSyncReconciliationService(testSql, "enforced")
+      .applyReconciliation(listingId, [incoming("ambiguous-payment-block", "unavailable")], "2026-07-21");
+
+    expect((await activeNights()).every((night) => night.source_kind === "website_hold")).toBe(true);
+    const [booking] = await testSql<{ status: string }[]>`
+      select status from public.bookings where id = ${bookingId}
+    `;
+    expect(booking.status).toBe("payment_pending");
   });
 
   it("promotes the next raw source when an imported winning event is archived", async () => {

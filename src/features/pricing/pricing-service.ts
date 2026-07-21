@@ -220,11 +220,39 @@ function pricingService() {
   return createPricingService(getDb());
 }
 
+const DEMO_ROOMS = [
+  ["Sage & Sunlight Studio", "sage-sunlight-studio"],
+  ["Ink & Ivory Suite", "ink-ivory-suite"],
+  ["Shade of Love", "shade-of-love"],
+  ["Midnight Espresso Suite", "midnight-espresso-suite"],
+  ["Luxe Urban Nest", "luxe-urban-nest"],
+  ["Emerald Suite", "emerald-suite"],
+  ["Linen & Lace Suite", "linen-lace-suite"],
+  ["Silk & Sage", "silk-sage"],
+] as const;
+
+function demoPricing(): PricingSummary[] {
+  return DEMO_ROOMS.map(([propertyName, publicRoomSlug], index) => ({
+    propertyId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    propertyName,
+    active: true,
+    publicRoomSlug,
+    maxGuests: 2,
+    weekdayPricePaise: 550_000 + index * 25_000,
+    weekendPricePaise: 650_000 + index * 25_000,
+    bookingEnabled: true,
+    overrides: [],
+  }));
+}
+
 export function getQuoteForSlug(input: QuoteRequest) {
   return pricingService().getQuoteForSlug(input);
 }
 
 export function listPricingForUser(userId: string) {
+  if (process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production") {
+    return Promise.resolve(demoPricing());
+  }
   return pricingService().listPricingForUser(userId);
 }
 
