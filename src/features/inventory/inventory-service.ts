@@ -161,7 +161,57 @@ export async function reconcilePropertyNights(
       )
     returning i.id
   `;
-  return released.length;
+  let replaced = 0;
+  for (const stayDate of dates) {
+    const [current] = await tx<{ id: string; source_kind: InventorySourceKind; source_id: string }[]>`
+      select id, source_kind, source_id from public.inventory_nights
+      where property_id = ${propertyId} and stay_date = ${stayDate} and status = 'active'
+    `;
+    if (current && (current.source_kind === "website_hold" || current.source_kind === "website_booking")) continue;
+
+    const [winner] = await tx<{ source_kind: InventorySourceKind; source_id: string }[]>`
+      select source_kind, source_id from (
+        select
+          case e.event_type
+            when 'reservation' then 'airbnb_reservation'
+            when 'unavailable' then 'airbnb_unavailable'
+            else 'airbnb_unknown'
+          end as source_kind,
+          e.id as source_id,
+          case when e.event_type = 'reservation' then 1 else 3 end as priority,
+          e.first_seen_at as created_at
+        from public.external_calendar_events e
+        join public.listings l on l.id = e.listing_id
+        where l.property_id = ${propertyId} and e.active = true and e.archived_at is null
+          and e.start_date <= ${stayDate} and e.end_date > ${stayDate}
+        union all
+        select 'manual_local' as source_kind, m.id as source_id, 2 as priority, m.created_at
+        from public.local_calendar_entries m
+        where m.property_id = ${propertyId} and m.active = true and m.archived_at is null
+          and m.start_date <= ${stayDate} and m.end_date > ${stayDate}
+      ) candidates
+      order by priority, created_at, source_id
+      limit 1
+    `;
+
+    if (!winner || (current?.source_kind === winner.source_kind && current.source_id === winner.source_id)) continue;
+    if (current) {
+      await tx`
+        update public.inventory_nights
+        set status = 'released', release_reason = 'reconciled_replaced', released_at = now(), updated_at = now()
+        where id = ${current.id}
+      `;
+      replaced += 1;
+    }
+    if (winner.source_kind === "website_hold") throw new Error("INVALID_INVENTORY_SOURCE");
+    await claimStayNights(tx, {
+      propertyId,
+      stayDates: [stayDate],
+      sourceKind: winner.source_kind,
+      sourceId: winner.source_id,
+    });
+  }
+  return released.length + replaced;
 }
 
 export function createInventoryService(sql: InventorySql) {

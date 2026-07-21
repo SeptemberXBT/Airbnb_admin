@@ -80,6 +80,25 @@ describe("CalendarWorkspace mutation feedback", () => {
     expect(submitted).toMatchObject({ privateBookingName: "Riya", paymentAmount: 12500.50 });
   });
 
+  it("preserves the 409 overlap confirmation flow for inventory conflicts", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "overlap" }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "entry-1" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ startDate: "2026-07-05", days: 28, properties: [property] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<CalendarWorkspace properties={[property]} startDate="2026-07-05" anchorDate="2026-07-12" zoom={14} demoMode={false} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Add entry for Suite A on 12 July 2026" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(await within(dialog).findByRole("status")).toHaveTextContent("Confirm the overlap to continue");
+    await userEvent.click(within(dialog).getByLabelText("Confirm overlapping entry"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(dialog).not.toHaveAttribute("open"));
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ allowOverlap: true });
+  });
+
   it("downloads a manual booking CSV for the selected range", async () => {
     const createObjectURL = vi.fn(() => "blob:csv");
     const revokeObjectURL = vi.fn();

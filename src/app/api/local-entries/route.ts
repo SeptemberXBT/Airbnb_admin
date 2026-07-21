@@ -6,7 +6,7 @@ import { z } from "zod";
 
 function responseForError(error: unknown) {
   const code = error instanceof Error ? error.message : "";
-  if (code === "OVERLAP") return NextResponse.json({ error: "overlap" }, { status: 409 });
+  if (code === "OVERLAP" || code === "INVENTORY_UNAVAILABLE") return NextResponse.json({ error: "overlap" }, { status: 409 });
   if (code === "FORBIDDEN") return NextResponse.json({ error: "forbidden" }, { status: 403 });
   if (code === "NOT_FOUND") return NextResponse.json({ error: "not_found" }, { status: 404 });
   if (error instanceof z.ZodError) return NextResponse.json({ error: "invalid_entry", fields: z.flattenError(error).fieldErrors }, { status: 400 });
