@@ -9,9 +9,10 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "jsdom",
-    exclude: ["src/**/*.db.test.ts"],
-    setupFiles: ["./vitest.setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}"],
+    environment: "node",
+    fileParallelism: false,
+    globalSetup: ["./src/test/db-global-setup.ts"],
+    include: ["src/**/*.db.test.ts"],
+    maxWorkers: 1,
   },
 });
