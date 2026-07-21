@@ -4,6 +4,7 @@ import {
   Building2,
   CalendarDays,
   ClipboardCheck,
+  IndianRupee,
   House,
   Settings,
 } from "lucide-react";
@@ -17,6 +18,7 @@ const destinations = [
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/today", label: "Today", icon: ClipboardCheck },
   { href: "/properties", label: "Properties", icon: Building2 },
+  { href: "/pricing", label: "Pricing", icon: IndianRupee },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
