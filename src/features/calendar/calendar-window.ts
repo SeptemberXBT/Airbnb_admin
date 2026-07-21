@@ -26,6 +26,7 @@ export function mergeCalendarWindows(current: CalendarProperty[], incoming: Cale
       ...property,
       entries: [...entries.values()].sort((a, b) =>
         a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.id.localeCompare(b.id)),
+      alerts: [...new Map([...(existing.alerts ?? []), ...(property.alerts ?? [])].map((alert) => [alert.id, alert])).values()],
     });
   }
   return [...byProperty.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));

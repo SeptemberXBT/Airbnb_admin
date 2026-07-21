@@ -2,8 +2,8 @@ export type CalendarEntry = {
   id: string;
   propertyId: string;
   listingId: string | null;
-  source: "airbnb" | "local";
-  kind: "reservation" | "unavailable" | "unknown" | "direct_reservation" | "blocked";
+  source: "airbnb" | "local" | "website";
+  kind: "reservation" | "unavailable" | "unknown" | "direct_reservation" | "blocked" | "payment_hold";
   label: string;
   startDate: string;
   endDate: string;
@@ -17,6 +17,14 @@ export type CalendarEntry = {
   reservationUrl: string | null;
   syncToAirbnb: boolean;
   airbnbObserved: boolean;
+  publicReference?: string | null;
+  holdExpiresAt?: string | null;
+};
+
+export type CalendarAlert = {
+  id: string;
+  severity: "warning" | "error";
+  message: string;
 };
 
 export type CalendarProperty = {
@@ -29,4 +37,5 @@ export type CalendarProperty = {
   lastSyncStatus: string | null;
   isStale: boolean;
   entries: CalendarEntry[];
+  alerts?: CalendarAlert[];
 };

@@ -6,6 +6,7 @@ import {
   ClipboardCheck,
   IndianRupee,
   House,
+  ReceiptText,
   Settings,
 } from "lucide-react";
 import Link from "next/link";
@@ -19,6 +20,7 @@ const destinations = [
   { href: "/today", label: "Today", icon: ClipboardCheck },
   { href: "/properties", label: "Properties", icon: Building2 },
   { href: "/pricing", label: "Pricing", icon: IndianRupee },
+  { href: "/bookings", label: "Bookings", icon: ReceiptText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -37,8 +37,15 @@ const MAX_WINDOW_DAYS = 168;
 const dateString = (date: Date) => format(date, "yyyy-MM-dd");
 const kindClass: Record<CalendarEntry["kind"], string> = {
   reservation: "reservation", unavailable: "unavailable", unknown: "unknown",
-  direct_reservation: "direct", blocked: "blocked",
+  direct_reservation: "direct", blocked: "blocked", payment_hold: "hold",
 };
+
+function eventTitle(entry: CalendarEntry) {
+  if (entry.kind === "payment_hold" && entry.holdExpiresAt) {
+    return `${entry.publicReference ?? entry.label} · expires ${formatInTimeZone(new Date(entry.holdExpiresAt), "Asia/Kolkata", "d MMM, h:mm a")}`;
+  }
+  return entry.privateBookingName || entry.label;
+}
 
 export function CalendarWorkspace({ properties: initialProperties, startDate, anchorDate, zoom, demoMode }: {
   properties: CalendarProperty[];
@@ -382,7 +389,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
         </div>
       </header>
       {message ? <div className="notice" role="status">{message}</div> : null}
-      <div className="calendar-key" aria-label="Calendar legend"><span><i className="key-airbnb" />Airbnb</span><span><i className="key-direct" />Direct</span><span><i className="key-blocked" />Blocked</span></div>
+      <div className="calendar-key" aria-label="Calendar legend"><span><i className="key-airbnb" />Airbnb</span><span><i className="key-direct" />Direct</span><span><i className="key-hold" />Payment in progress</span><span><i className="key-blocked" />Blocked</span></div>
       <section className="calendar-scroller" ref={scroller} onScroll={handleScroll} aria-label="Infinite property calendar">
         <div className={`calendar-table calendar-table--${calendarZoom}`} style={{ "--day-count": dayCount, "--calendar-zoom": calendarZoom } as React.CSSProperties}>
           <div className="calendar-dates">
@@ -393,10 +400,10 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
             const entries = assignEventLanes(property.entries.filter(shown));
             const laneCount = Math.max(1, ...entries.map((entry) => entry.lane + 1));
             return <div className="calendar-property-row" key={property.id} style={{ "--lanes": laneCount } as React.CSSProperties}>
-              <div className="property-sticky"><strong>{property.name}</strong><span className={property.lastSyncStatus === "failure" || property.isStale ? "sync-error" : ""}>{syncText(property)}</span></div>
+              <div className="property-sticky"><strong>{property.name}</strong><span className={property.lastSyncStatus === "failure" || property.isStale ? "sync-error" : ""}>{syncText(property)}</span>{property.alerts?.map((alert) => <span className={`calendar-property-alert calendar-property-alert--${alert.severity}`} role="alert" key={alert.id}>{alert.message}</span>)}</div>
               <div className="property-timeline">
                 <div className="day-buttons">{dates.map((date) => { const value = dateString(date); return <button key={value} aria-label={`Add entry for ${property.name} on ${format(date, "d MMMM yyyy")}`} onClick={() => openEditor(property, value)} />; })}</div>
-                <div className="event-layer">{entries.map((entry) => { const span = eventSpan(entry.startDate, entry.endDate, windowStart, dayCount); if (!span) return null; return <button key={entry.id} className={`calendar-event calendar-event--${kindClass[entry.kind]}`} style={{ gridColumn: `${span.column} / span ${span.span}`, top: `${entry.lane * 30 + 7}px` }} onClick={() => openEditor(property, entry.startDate, entry)} aria-label={`${entry.label}, ${entry.startDate} to ${entry.endDate}`} title={entry.privateBookingName || entry.label}><span>{entry.privateBookingName || entry.label}</span></button>; })}</div>
+                <div className="event-layer">{entries.map((entry) => { const span = eventSpan(entry.startDate, entry.endDate, windowStart, dayCount); if (!span) return null; return <button key={entry.id} className={`calendar-event calendar-event--${kindClass[entry.kind]}`} style={{ gridColumn: `${span.column} / span ${span.span}`, top: `${entry.lane * 30 + 7}px` }} onClick={() => entry.source === "website" ? setMessage(`${entry.label}. Open Bookings for private details.`) : openEditor(property, entry.startDate, entry)} aria-label={`${entry.label}, ${entry.startDate} to ${entry.endDate}`} title={eventTitle(entry)}><span>{entry.label}</span></button>; })}</div>
               </div>
             </div>;
           })}

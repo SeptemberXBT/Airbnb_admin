@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("AppShell", () => {
-  it("provides all five management destinations without hover-only controls", async () => {
+  it("provides all six management destinations without hover-only controls", async () => {
     let AppShell: React.ComponentType<React.PropsWithChildren> | undefined;
     try {
       AppShell = (await import("./app-shell")).AppShell;
@@ -24,6 +24,7 @@ describe("AppShell", () => {
     expect(screen.getAllByRole("link", { name: /today/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /properties/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /pricing/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: /bookings/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /settings/i }).length).toBeGreaterThan(0);
     expect(screen.getByText("Workspace")).toBeVisible();
   });

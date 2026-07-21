@@ -118,4 +118,38 @@ describe("CalendarWorkspace mutation feedback", () => {
     expect(createObjectURL).toHaveBeenCalled();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:csv");
   });
+
+  it("renders website payment holds, confirmed references, and operational alerts without guest PII", () => {
+    const operationalProperty = {
+      ...property,
+      alerts: [{ id: "alert-1", severity: "error", message: "Refund failed for NH-FAILED123456" }],
+      entries: [
+        {
+          id: "hold-1", propertyId: property.id, listingId: null, source: "website", kind: "payment_hold",
+          label: "Payment in progress", startDate: "2026-07-12", endDate: "2026-07-14",
+          privateBookingName: null, paymentAmount: null, privateContact: null, privateNote: null,
+          expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null,
+          reservationUrl: null, syncToAirbnb: false, airbnbObserved: false,
+          publicReference: "NH-HOLD12345678", holdExpiresAt: "2026-07-12T10:10:00.000Z",
+        },
+        {
+          id: "direct-1", propertyId: property.id, listingId: null, source: "website", kind: "direct_reservation",
+          label: "Website booking · NH-BOOKED123456", startDate: "2026-07-15", endDate: "2026-07-17",
+          privateBookingName: null, paymentAmount: null, privateContact: null, privateNote: null,
+          expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null,
+          reservationUrl: null, syncToAirbnb: true, airbnbObserved: false,
+          publicReference: "NH-BOOKED123456", holdExpiresAt: null,
+        },
+      ],
+    } as CalendarProperty;
+
+    render(<CalendarWorkspace properties={[operationalProperty]} startDate="2026-07-05" anchorDate="2026-07-12" zoom={14} demoMode={false} />);
+
+    const hold = screen.getByRole("button", { name: /Payment in progress.*2026-07-12 to 2026-07-14/i });
+    expect(hold).toHaveClass("calendar-event--hold");
+    expect(hold).toHaveAttribute("title", expect.stringMatching(/expires/i));
+    expect(screen.getByRole("button", { name: /Website booking.*NH-BOOKED123456/i })).toHaveClass("calendar-event--direct");
+    expect(screen.getByRole("alert")).toHaveTextContent("Refund failed for NH-FAILED123456");
+    expect(document.body).not.toHaveTextContent("riya@example.test");
+  });
 });
