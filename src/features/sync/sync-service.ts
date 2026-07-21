@@ -7,6 +7,7 @@ import type postgres from "postgres";
 import { createInventoryService, reconcilePropertyNights } from "@/features/inventory/inventory-service";
 import { getInventoryLedgerMode, type InventoryLedgerMode } from "@/features/inventory/inventory-mode";
 import { recordPropertyShadowMismatches } from "@/features/inventory/shadow-service";
+import { cancelWebsiteBookingForAirbnbCollision } from "@/features/bookings/cancellation-service";
 import { fetchCalendar } from "./fetch-calendar";
 import { affectedReconciliationBounds, planReconciliation } from "./reconcile";
 import { mapWithConcurrency, sanitizeSyncError } from "./sync-security";
@@ -107,6 +108,56 @@ export function createSyncReconciliationService(sql: SyncSql, inventoryMode: Inv
           group by i.booking_id
           order by i.booking_id
         ` : [];
+
+        if (inventoryMode === "enforced") {
+          for (const collision of collisionRows) {
+            const [reservation] = await tx<{ id: string }[]>`
+              select e.id from public.external_calendar_events e
+              join public.listings l on l.id = e.listing_id
+              where l.property_id = ${propertyId} and e.event_type = 'reservation'
+                and e.active = true and e.archived_at is null
+                and exists (
+                  select 1 from public.inventory_nights i
+                  where i.booking_id = ${collision.booking_id} and i.status = 'active'
+                    and i.stay_date >= e.start_date and i.stay_date < e.end_date
+                )
+              order by e.first_seen_at, e.id
+              limit 1
+            `;
+            if (reservation) {
+              await cancelWebsiteBookingForAirbnbCollision(tx, collision.booking_id, reservation.id);
+            }
+          }
+        }
+
+        const confirmedBlockAlerts = bounds ? await tx<{ booking_id: string; external_event_id: string }[]>`
+          select distinct i.booking_id, e.id as external_event_id
+          from public.inventory_nights i
+          join public.bookings b on b.id = i.booking_id and b.status = 'confirmed'
+          join public.external_calendar_events e on e.event_type in ('unavailable', 'unknown')
+            and e.active = true and e.archived_at is null
+            and e.start_date <= i.stay_date and e.end_date > i.stay_date
+          join public.listings l on l.id = e.listing_id and l.property_id = i.property_id
+          where i.property_id = ${propertyId} and i.source_kind = 'website_booking' and i.status = 'active'
+          order by i.booking_id, e.id
+        ` : [];
+        for (const alert of confirmedBlockAlerts) {
+          const [existingAlert] = await tx`
+            select 1 from public.audit_log
+            where property_id = ${propertyId}
+              and action = 'airbnb_calendar_block_overlaps_confirmed_booking'
+              and entity_id = ${alert.booking_id}
+              and changes->>'externalEventId' = ${alert.external_event_id}
+            limit 1
+          `;
+          if (!existingAlert) await tx`
+            insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+            values (
+              ${propertyId}, 'airbnb_calendar_block_overlaps_confirmed_booking',
+              'website_booking', ${alert.booking_id}, ${tx.json({ externalEventId: alert.external_event_id })}
+            )
+          `;
+        }
 
         const displacedRows = bounds && inventoryMode === "enforced"
           ? await tx<{ booking_id: string; stay_dates: string[] }[]>`

@@ -126,7 +126,11 @@ describe("inventory backfill and iCal application", () => {
       .applyReconciliation(listingId, [incoming("airbnb-reservation", "reservation")], "2026-07-21");
 
     expect(result.collisions).toEqual([{ bookingId, stayDates: ["2026-08-14", "2026-08-15"] }]);
-    expect((await activeNights()).every((night) => night.source_kind === "website_hold")).toBe(true);
+    expect((await activeNights()).every((night) => night.source_kind === "airbnb_reservation")).toBe(true);
+    const [booking] = await testSql<{ status: string; cancellation_reason: string }[]>`
+      select status, cancellation_reason from public.bookings where id = ${bookingId}
+    `;
+    expect(booking).toEqual({ status: "cancelled", cancellation_reason: "airbnb_collision" });
   });
 
   it("lets unavailable inventory displace only an unpaid website hold", async () => {
@@ -198,11 +202,11 @@ describe("inventory backfill and iCal application", () => {
     );
 
     expect(result.collisions).toEqual([{ bookingId, stayDates: ["2026-08-14", "2026-08-15"] }]);
-    expect((await activeNights()).every((night) => night.source_kind === "website_hold")).toBe(true);
+    expect((await activeNights()).every((night) => night.source_kind === "airbnb_reservation")).toBe(true);
     const [booking] = await testSql<{ status: string; cancellation_reason: string | null }[]>`
       select status, cancellation_reason from public.bookings where id = ${bookingId}
     `;
-    expect(booking).toEqual({ status: "processing", cancellation_reason: null });
+    expect(booking).toEqual({ status: "cancelled", cancellation_reason: "airbnb_collision" });
   });
 
   it("retains payment-pending inventory when unavailable is not a definitive payment failure", async () => {

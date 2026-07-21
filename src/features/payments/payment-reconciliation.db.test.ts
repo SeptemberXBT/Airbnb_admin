@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb, testSql } from "@/test/db-test-client";
 import { claimStayNights, createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
 import { createPaymentReconciliationService } from "./payment-reconciliation";
@@ -51,6 +51,7 @@ async function activeKinds() {
 describe("payment reconciliation", () => {
   beforeEach(async () => {
     await resetDb();
+    vi.stubEnv("ADMIN_NOTIFICATION_EMAIL", "admin@example.test");
     sequence = 0;
     const [property] = await testSql<{ id: string }[]>`insert into public.properties (name) values ('Payment Suite') returning id`;
     propertyId = property.id;
@@ -60,6 +61,8 @@ describe("payment reconciliation", () => {
     `;
     listingId = listing.id;
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it("confirms captured payment once, converts inventory, and creates one linked direct reservation", async () => {
     const booking = await addHeldBooking();
@@ -73,6 +76,13 @@ describe("payment reconciliation", () => {
       select count(*)::int as count from public.local_calendar_entries where booking_id = ${booking.id}
     `;
     expect(count).toBe(1);
+    const messages = await testSql<{ recipient_kind: string; template_key: string }[]>`
+      select recipient_kind, template_key from public.notification_outbox where booking_id = ${booking.id} order by recipient_kind
+    `;
+    expect(messages).toEqual([
+      { recipient_kind: "admin", template_key: "admin_new_booking" },
+      { recipient_kind: "guest", template_key: "booking_confirmation" },
+    ]);
   });
 
   it("deduplicates webhook event IDs and ignores an out-of-order authorization after capture", async () => {

@@ -5,6 +5,8 @@ import { getDb } from "@/lib/db/client";
 import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
 import { createRazorpayClient, type RazorpayPayment } from "./razorpay-client";
 import type { ParsedRazorpayWebhook } from "./razorpay-webhook";
+import { enqueueNotification } from "@/features/email/outbox-service";
+import { renderEmailTemplate } from "@/features/email/templates";
 
 type PaymentSql = postgres.Sql;
 type PaymentLookup = { fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
@@ -170,6 +172,34 @@ export function createPaymentReconciliationService(
           insert into public.booking_events (property_id, booking_id, event_type, metadata)
           values (${current.property_id}, ${current.id}, 'payment_confirmed', ${tx.json({ trigger })})
         `;
+        const [property] = await tx<{ name: string }[]>`
+          select name from public.properties where id = ${current.property_id}
+        `;
+        const templateData = {
+          guestName: current.guest_name,
+          propertyName: property.name,
+          bookingReference: current.public_reference,
+          checkin: current.checkin,
+          checkout: current.checkout,
+          amountPaise: current.amount_paise,
+        };
+        await enqueueNotification(tx, {
+          bookingId: current.id,
+          recipientKind: "guest",
+          recipientEmail: current.guest_email,
+          templateKey: "booking_confirmation",
+          deduplicationKey: `booking-confirmed:${current.id}:guest`,
+          ...renderEmailTemplate("booking_confirmation", templateData),
+        });
+        const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+        if (adminEmail) await enqueueNotification(tx, {
+          bookingId: current.id,
+          recipientKind: "admin",
+          recipientEmail: adminEmail,
+          templateKey: "admin_new_booking",
+          deduplicationKey: `booking-confirmed:${current.id}:admin`,
+          ...renderEmailTemplate("admin_new_booking", templateData),
+        });
         return publicState(confirmed);
       }
 
