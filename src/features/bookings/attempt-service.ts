@@ -87,8 +87,10 @@ export function createAttemptService(sql: AttemptSql, options: { clock?: () => D
     },
 
     async recordProgress(idempotencyKey: string, leaseToken: string, durableStep: string) {
+      const now = clock();
       const [updated] = await sql<{ idempotency_key: string }[]>`
-        update public.booking_attempts set durable_step = ${durableStep}, updated_at = ${clock()}
+        update public.booking_attempts
+        set durable_step = ${durableStep}, lease_expires_at = ${new Date(now.getTime() + 60_000)}, updated_at = ${now}
         where idempotency_key = ${idempotencyKey} and status = 'processing' and lease_token = ${leaseToken}
         returning idempotency_key
       `;

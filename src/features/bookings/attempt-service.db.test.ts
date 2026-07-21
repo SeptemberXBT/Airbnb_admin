@@ -72,6 +72,19 @@ describe("booking attempt idempotency", () => {
     expect(resumed.leaseToken).not.toBe(acquired.leaseToken);
   });
 
+  it("renews the 60-second lease whenever durable progress is recorded", async () => {
+    const key = randomUUID();
+    const acquired = await service().acquire(key, REQUEST_HASH);
+    if (acquired.kind !== "acquired") throw new Error("expected acquisition");
+    now = new Date(now.getTime() + 50_000);
+    await service().recordProgress(key, acquired.leaseToken, "hold_committed");
+    now = new Date(now.getTime() + 20_000);
+
+    expect(await service().acquire(key, REQUEST_HASH)).toEqual({
+      kind: "processing", retryAfterSeconds: 40,
+    });
+  });
+
   it("resumes retryable work from its last durable step", async () => {
     const key = randomUUID();
     const acquired = await service().acquire(key, REQUEST_HASH);
