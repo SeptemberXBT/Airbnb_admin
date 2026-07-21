@@ -137,11 +137,16 @@ function validateExpectedOrder(order: RazorpayOrder, booking: StoredBooking) {
 
 export function createBookingService(
   sql: BookingSql,
-  dependencies: { razorpay: RazorpayAdapter; clock?: () => Date },
+  dependencies: { razorpay?: RazorpayAdapter; clock?: () => Date },
 ) {
   const clock = dependencies.clock ?? (() => new Date());
   const inventory = createInventoryService(sql);
   const attempts = createAttemptService(sql, { clock });
+
+  function requireRazorpay() {
+    if (!dependencies.razorpay) throw new Error("RAZORPAY_NOT_CONFIGURED");
+    return dependencies.razorpay;
+  }
 
   async function terminalFailure(
     idempotencyKey: string,
@@ -206,7 +211,7 @@ export function createBookingService(
         for update of b
       `;
       if (!active) return null;
-      const response = checkoutResponse(booking, orderId, dependencies.razorpay.publicKeyId);
+      const response = checkoutResponse(booking, orderId, requireRazorpay().publicKeyId);
       await tx`
         update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
           terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
@@ -329,6 +334,7 @@ export function createBookingService(
     },
 
     async createBooking(rawInput: CreateBookingRequest, idempotencyKey: string): Promise<CheckoutResponse> {
+      const razorpay = requireRazorpay();
       const input = createBookingRequestSchema(currentIndiaStayDate(clock())).parse(rawInput);
       const acquisition = await attempts.acquire(idempotencyKey, requestHash(input));
       if (acquisition.kind === "processing") {
@@ -383,7 +389,7 @@ export function createBookingService(
       let recovered: RazorpayOrder | null = null;
       if (acquisition.resumed) {
         try {
-          recovered = await dependencies.razorpay.findOrderByReceipt(receipt);
+          recovered = await razorpay.findOrderByReceipt(receipt);
           if (recovered) validateExpectedOrder(recovered, booking);
         } catch {
           await attempts.markRetryable(idempotencyKey, acquisition.leaseToken);
@@ -395,7 +401,7 @@ export function createBookingService(
       } else {
         try {
           providerOrder = validateExpectedOrder(
-            await dependencies.razorpay.createOrder({ amountPaise: booking.amount_paise, receipt }),
+            await razorpay.createOrder({ amountPaise: booking.amount_paise, receipt }),
             booking,
           );
         } catch (error) {
@@ -441,7 +447,7 @@ export function createBookingService(
         if (!attempt) throw new Error("ATTEMPT_LEASE_LOST");
         await tx`
           update public.payment_jobs set status = 'succeeded', provider_id = ${providerOrder.id},
-            terminal_result = ${tx.json(checkoutResponse(booking, providerOrder.id, dependencies.razorpay.publicKeyId))},
+            terminal_result = ${tx.json(checkoutResponse(booking, providerOrder.id, razorpay.publicKeyId))},
             lease_token = null, lease_expires_at = null, last_error_code = null, updated_at = ${clock()}
           where booking_id = ${booking.id} and job_kind = 'order_recovery'
         `;
@@ -452,7 +458,7 @@ export function createBookingService(
         return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
       }
       booking = { ...booking, razorpay_order_id: providerOrder.id };
-      const response = checkoutResponse(booking, providerOrder.id, dependencies.razorpay.publicKeyId);
+      const response = checkoutResponse(booking, providerOrder.id, razorpay.publicKeyId);
       await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {
         status: "succeeded", httpStatus: 201, response,
       });
@@ -481,8 +487,12 @@ function configuredService() {
   });
 }
 
+function configuredAvailabilityService() {
+  return createBookingService(getDb(), {});
+}
+
 export function quoteAvailability(input: AvailabilityRequest) {
-  return configuredService().quoteAvailability(input);
+  return configuredAvailabilityService().quoteAvailability(input);
 }
 
 export function createBooking(input: CreateBookingRequest, idempotencyKey: string) {
