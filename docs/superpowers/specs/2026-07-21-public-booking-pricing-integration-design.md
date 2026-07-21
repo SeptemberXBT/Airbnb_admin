@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-21
 
-**Status:** Approved in conversation; awaiting review of this written specification
+**Status:** Approved and locked for implementation
 
 **Admin repository:** `/Users/retyush/airbnb-operations-calendar`
 
