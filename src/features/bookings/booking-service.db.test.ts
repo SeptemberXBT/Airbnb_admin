@@ -192,6 +192,28 @@ describe("authoritative website booking holds", () => {
     ]);
   });
 
+  it("does not finalize an already-attached order after Airbnb has cancelled its hold", async () => {
+    const razorpay = fakeRazorpay();
+    razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"));
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const key = randomUUID();
+    await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
+    const [booking] = await testSql<{ id: string }[]>`select id from public.bookings`;
+    await testSql`update public.bookings set razorpay_order_id = 'order_attached_before_cancel' where id = ${booking.id}`;
+    await createInventoryService(testSql).withPropertyInventory(propertyId, async (tx) => {
+      await tx`update public.bookings set status = 'cancelled', cancellation_reason = 'airbnb_collision' where id = ${booking.id}`;
+      await releaseSourceNights(tx, "website_hold", booking.id, "airbnb_collision");
+    });
+
+    await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "BOOKING_NO_LONGER_ACTIVE" });
+    await expect(testSql`select status, terminal_response from public.booking_attempts`).resolves.toEqual([
+      { status: "definitive_failure", terminal_response: { error: "BOOKING_NO_LONGER_ACTIVE" } },
+    ]);
+    await expect(testSql`select status, provider_id from public.payment_jobs`).resolves.toEqual([
+      { status: "definitive_failure", provider_id: null },
+    ]);
+  });
+
   it("uses a domain error type without exposing database or provider details", () => {
     expect(new BookingServiceError("ROOM_UNAVAILABLE", 409).message).toBe("ROOM_UNAVAILABLE");
   });

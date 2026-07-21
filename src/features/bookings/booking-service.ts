@@ -185,6 +185,47 @@ export function createBookingService(
     });
   }
 
+  async function finalizeAttachedOrder(
+    booking: StoredBooking,
+    idempotencyKey: string,
+    leaseToken: string,
+  ) {
+    if (!booking.razorpay_order_id) throw new Error("ORDER_ID_REQUIRED");
+    const orderId = booking.razorpay_order_id;
+    return inventory.withPropertyInventory(booking.property_id, async (tx) => {
+      const now = clock();
+      const [active] = await tx`
+        select 1 from public.bookings b
+        where b.id = ${booking.id} and b.status in ('processing', 'held')
+          and b.hold_expires_at > ${now} and b.razorpay_order_id = ${orderId}
+          and exists (
+            select 1 from public.inventory_nights i
+            where i.booking_id = b.id and i.property_id = b.property_id
+              and i.source_kind = 'website_hold' and i.status = 'active'
+          )
+        for update of b
+      `;
+      if (!active) return null;
+      const response = checkoutResponse(booking, orderId, dependencies.razorpay.publicKeyId);
+      await tx`
+        update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
+          terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
+          last_error_code = null, updated_at = ${now}
+        where booking_id = ${booking.id} and job_kind = 'order_recovery'
+      `;
+      const [attempt] = await tx<{ idempotency_key: string }[]>`
+        update public.booking_attempts set status = 'succeeded', durable_step = 'razorpay_order_created',
+          terminal_http_status = 201, terminal_response = ${tx.json(response)},
+          replay_until = ${new Date(now.getTime() + 30 * 60_000)}, lease_token = null,
+          lease_expires_at = null, updated_at = ${now}
+        where idempotency_key = ${idempotencyKey} and status = 'processing' and lease_token = ${leaseToken}
+        returning idempotency_key
+      `;
+      if (!attempt) throw new Error("ATTEMPT_LEASE_LOST");
+      return response;
+    });
+  }
+
   async function markOrderRecoveryInactive(booking: StoredBooking, providerId: string | null = null) {
     await sql`
       update public.payment_jobs set status = 'definitive_failure', provider_id = coalesce(${providerId}, provider_id),
@@ -315,23 +356,17 @@ export function createBookingService(
           await attempts.markRetryable(idempotencyKey, acquisition.leaseToken);
           throw new BookingServiceError("BOOKING_RETRYABLE", 503);
         }
-      } else if (!await attemptBookingHasActiveHold(booking)) {
-        await markOrderRecoveryInactive(booking);
-        return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
-      }
-
-      if (booking.razorpay_order_id) {
-        const response = checkoutResponse(booking, booking.razorpay_order_id, dependencies.razorpay.publicKeyId);
-        await sql`
-          update public.payment_jobs set status = 'succeeded', provider_id = ${booking.razorpay_order_id},
-            terminal_result = ${sql.json(response)}, lease_token = null, lease_expires_at = null,
-            last_error_code = null, updated_at = ${clock()}
-          where booking_id = ${booking.id} and job_kind = 'order_recovery'
-        `;
-        await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {
-          status: "succeeded", httpStatus: 201, response,
-        });
-        return response;
+      } else {
+        if (booking.razorpay_order_id) {
+          const response = await finalizeAttachedOrder(booking, idempotencyKey, acquisition.leaseToken);
+          if (response) return response;
+          await markOrderRecoveryInactive(booking);
+          return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
+        }
+        if (!await attemptBookingHasActiveHold(booking)) {
+          await markOrderRecoveryInactive(booking);
+          return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
+        }
       }
 
       await attempts.recordProgress(idempotencyKey, acquisition.leaseToken, "razorpay_order_pending");
