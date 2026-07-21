@@ -168,6 +168,32 @@ export function createBookingService(
     return booking ?? null;
   }
 
+  async function attemptBookingHasActiveHold(booking: StoredBooking) {
+    return inventory.withPropertyInventory(booking.property_id, async (tx) => {
+      const [active] = await tx`
+        select 1 from public.bookings b
+        where b.id = ${booking.id} and b.status in ('processing', 'held')
+          and b.hold_expires_at > ${clock()}
+          and exists (
+            select 1 from public.inventory_nights i
+            where i.booking_id = b.id and i.property_id = b.property_id
+              and i.source_kind = 'website_hold' and i.status = 'active'
+          )
+        for update of b
+      `;
+      return Boolean(active);
+    });
+  }
+
+  async function markOrderRecoveryInactive(booking: StoredBooking, providerId: string | null = null) {
+    await sql`
+      update public.payment_jobs set status = 'definitive_failure', provider_id = coalesce(${providerId}, provider_id),
+        last_error_code = 'booking_no_longer_active', lease_token = null, lease_expires_at = null,
+        updated_at = ${clock()}
+      where booking_id = ${booking.id} and job_kind = 'order_recovery' and status <> 'succeeded'
+    `;
+  }
+
   async function createHold(
     input: CreateBookingRequest,
     idempotencyKey: string,
@@ -289,6 +315,9 @@ export function createBookingService(
           await attempts.markRetryable(idempotencyKey, acquisition.leaseToken);
           throw new BookingServiceError("BOOKING_RETRYABLE", 503);
         }
+      } else if (!await attemptBookingHasActiveHold(booking)) {
+        await markOrderRecoveryInactive(booking);
+        return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
       }
 
       if (booking.razorpay_order_id) {
@@ -344,10 +373,23 @@ export function createBookingService(
         }
       }
 
-      await sql.begin(async (tx) => {
+      const orderAttached = await inventory.withPropertyInventory(booking.property_id, async (tx) => {
+        const [active] = await tx`
+          select 1 from public.bookings b
+          where b.id = ${booking.id} and b.status in ('processing', 'held')
+            and b.hold_expires_at > ${clock()}
+            and exists (
+              select 1 from public.inventory_nights i
+              where i.booking_id = b.id and i.property_id = b.property_id
+                and i.source_kind = 'website_hold' and i.status = 'active'
+            )
+          for update of b
+        `;
+        if (!active) return false;
         const [saved] = await tx`
           update public.bookings set razorpay_order_id = ${providerOrder.id}, updated_at = ${clock()}
           where id = ${booking.id} and razorpay_order_id is null
+            and status in ('processing', 'held') and hold_expires_at > ${clock()}
           returning id
         `;
         if (!saved) {
@@ -368,7 +410,12 @@ export function createBookingService(
             lease_token = null, lease_expires_at = null, last_error_code = null, updated_at = ${clock()}
           where booking_id = ${booking.id} and job_kind = 'order_recovery'
         `;
+        return true;
       });
+      if (!orderAttached) {
+        await markOrderRecoveryInactive(booking, providerOrder.id);
+        return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
+      }
       booking = { ...booking, razorpay_order_id: providerOrder.id };
       const response = checkoutResponse(booking, providerOrder.id, dependencies.razorpay.publicKeyId);
       await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {

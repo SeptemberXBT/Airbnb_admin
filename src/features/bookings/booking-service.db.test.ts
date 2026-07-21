@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb, testSql } from "@/test/db-test-client";
 import { createBookingService, BookingServiceError } from "./booking-service";
 import { RazorpayClientError, type RazorpayOrder } from "@/features/payments/razorpay-client";
+import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
 
 const USER_ID = "10000000-0000-4000-8000-000000000001";
 const NOW = new Date("2026-07-21T10:00:00.000Z");
@@ -169,6 +170,26 @@ describe("authoritative website booking holds", () => {
     expect(await testSql`select id from public.inventory_nights where status = 'active'`).toHaveLength(0);
     const [booking] = await testSql<{ status: string }[]>`select status from public.bookings`;
     expect(booking.status).toBe("payment_failed");
+  });
+
+  it("does not resume Razorpay order creation after Airbnb has cancelled the ambiguous hold", async () => {
+    const razorpay = fakeRazorpay();
+    razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"));
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const key = randomUUID();
+    await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
+    const [booking] = await testSql<{ id: string }[]>`select id from public.bookings`;
+    await createInventoryService(testSql).withPropertyInventory(propertyId, async (tx) => {
+      await tx`update public.bookings set status = 'cancelled', cancellation_reason = 'airbnb_collision' where id = ${booking.id}`;
+      await releaseSourceNights(tx, "website_hold", booking.id, "airbnb_collision");
+    });
+
+    await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "BOOKING_NO_LONGER_ACTIVE" });
+    expect(razorpay.findOrderByReceipt).not.toHaveBeenCalled();
+    expect(razorpay.createOrder).toHaveBeenCalledOnce();
+    await expect(testSql`select status, razorpay_order_id from public.bookings`).resolves.toEqual([
+      { status: "cancelled", razorpay_order_id: null },
+    ]);
   });
 
   it("uses a domain error type without exposing database or provider details", () => {

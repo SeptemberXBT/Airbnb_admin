@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb, testSql } from "@/test/db-test-client";
-import { claimStayNights, createInventoryService } from "@/features/inventory/inventory-service";
+import { claimStayNights, createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
 import { processOrderRecoveryJobs } from "./order-recovery";
 
 const NOW = new Date("2026-07-21T10:15:00.000Z");
@@ -73,5 +73,51 @@ describe("Razorpay order recovery worker", () => {
     expect(await processOrderRecoveryJobs(testSql, provider, { now: NOW, limit: 10 })).toEqual({ processed: 0, failed: 1 });
     await expect(testSql`select id from public.inventory_nights where status = 'active'`).resolves.toHaveLength(1);
     await expect(testSql`select status from public.payment_jobs`).resolves.toEqual([{ status: "retryable_failure" }]);
+  });
+
+  it("terminally closes recovery without contacting Razorpay when the booking is already cancelled", async () => {
+    const { property, booking } = await seed(new Date("2026-07-21T10:20:00.000Z"));
+    await createInventoryService(testSql).withPropertyInventory(property.id, async (tx) => {
+      await tx`update public.bookings set status = 'cancelled', cancellation_reason = 'airbnb_collision' where id = ${booking.id}`;
+      await releaseSourceNights(tx, "website_hold", booking.id, "airbnb_collision");
+    });
+    const provider = { publicKeyId: "rzp_test_public", findOrderByReceipt: vi.fn() };
+
+    expect(await processOrderRecoveryJobs(testSql, provider, { now: NOW, limit: 10 })).toEqual({ processed: 1, failed: 0 });
+    expect(provider.findOrderByReceipt).not.toHaveBeenCalled();
+    await expect(testSql`select status, razorpay_order_id from public.bookings`).resolves.toEqual([
+      { status: "cancelled", razorpay_order_id: null },
+    ]);
+    await expect(testSql`select status, last_error_code from public.payment_jobs`).resolves.toEqual([
+      { status: "definitive_failure", last_error_code: "booking_no_longer_active" },
+    ]);
+    await expect(testSql`select status, terminal_response from public.booking_attempts`).resolves.toEqual([
+      { status: "definitive_failure", terminal_response: { error: "booking_no_longer_active" } },
+    ]);
+  });
+
+  it("does not attach an order when Airbnb cancels the hold during provider lookup", async () => {
+    const { property, booking } = await seed(new Date("2026-07-21T10:20:00.000Z"));
+    const provider = {
+      publicKeyId: "rzp_test_public",
+      findOrderByReceipt: vi.fn(async () => {
+        await createInventoryService(testSql).withPropertyInventory(property.id, async (tx) => {
+          await tx`update public.bookings set status = 'cancelled', cancellation_reason = 'airbnb_collision' where id = ${booking.id}`;
+          await releaseSourceNights(tx, "website_hold", booking.id, "airbnb_collision");
+        });
+        return {
+          id: "order_too_late", amount: 500000, currency: "INR" as const,
+          receipt: `nh_${booking.public_reference}`, status: "created",
+        };
+      }),
+    };
+
+    expect(await processOrderRecoveryJobs(testSql, provider, { now: NOW, limit: 10 })).toEqual({ processed: 1, failed: 0 });
+    await expect(testSql`select status, razorpay_order_id from public.bookings`).resolves.toEqual([
+      { status: "cancelled", razorpay_order_id: null },
+    ]);
+    await expect(testSql`select status, provider_id from public.payment_jobs`).resolves.toEqual([
+      { status: "definitive_failure", provider_id: "order_too_late" },
+    ]);
   });
 });
