@@ -3,77 +3,145 @@ import { formatInTimeZone } from "date-fns-tz";
 import { getDb } from "@/lib/db/client";
 import { parseAirbnbCalendar, type NormalizedCalendarEvent } from "@/lib/ical/parser";
 import { openSecret } from "@/lib/security/secrets";
+import type postgres from "postgres";
+import { createInventoryService, reconcilePropertyNights } from "@/features/inventory/inventory-service";
+import { getInventoryLedgerMode, type InventoryLedgerMode } from "@/features/inventory/inventory-mode";
+import { recordPropertyShadowMismatches } from "@/features/inventory/shadow-service";
 import { fetchCalendar } from "./fetch-calendar";
-import { planReconciliation } from "./reconcile";
+import { affectedReconciliationBounds, planReconciliation } from "./reconcile";
 import { mapWithConcurrency, sanitizeSyncError } from "./sync-security";
 
 type SyncListing = { id: string; encrypted_url: string };
 type SyncSource = "scheduled" | "manual";
 
-async function applyReconciliation(listingId: string, incoming: NormalizedCalendarEvent[]) {
-  const sql = getDb();
-  const rows = await sql<{
-    id: string; source_uid: string; source_content_hash: string; start_date: string;
-    end_date: string; active: boolean; historical: boolean;
-  }[]>`
-    select id, source_uid, source_content_hash, start_date::text, end_date::text, active, historical
-    from public.external_calendar_events where listing_id = ${listingId}
-  `;
-  const plan = planReconciliation(
-    rows.map((row) => ({
-      id: row.id, sourceUid: row.source_uid, contentHash: row.source_content_hash,
-      startDate: row.start_date, endDate: row.end_date, active: row.active, historical: row.historical,
-    })),
-    incoming,
-    formatInTimeZone(new Date(), "Asia/Kolkata", "yyyy-MM-dd"),
-  );
+type SyncSql = postgres.Sql;
 
-  await sql.begin(async (tx) => {
-    for (const event of plan.create) {
-      await tx`
-        insert into public.external_calendar_events (
-          listing_id, source_uid, event_type, start_date, end_date,
-          sanitized_reservation_url, source_content_hash, active, historical, archived_at
-        ) values (
-          ${listingId}, ${event.sourceUid}, ${event.eventType}, ${event.startDate}, ${event.endDate},
-          ${event.sanitizedReservationUrl}, ${event.contentHash}, true, false, null
-        )
-        on conflict (listing_id, source_uid) do update set
-          event_type = excluded.event_type, start_date = excluded.start_date,
-          end_date = excluded.end_date, sanitized_reservation_url = excluded.sanitized_reservation_url,
-          source_content_hash = excluded.source_content_hash, last_seen_at = now(),
-          active = true, historical = false, archived_at = null
+export function createSyncReconciliationService(sql: SyncSql, inventoryMode: InventoryLedgerMode) {
+  const inventory = createInventoryService(sql);
+  return {
+    async applyReconciliation(listingId: string, incoming: NormalizedCalendarEvent[], todayDate: string) {
+      const [listing] = await sql<{ property_id: string }[]>`
+        select property_id from public.listings where id = ${listingId} and archived_at is null
       `;
-    }
-    for (const { existingId, event } of plan.update) {
-      await tx`
-        update public.external_calendar_events set event_type = ${event.eventType},
-          start_date = ${event.startDate}, end_date = ${event.endDate},
-          sanitized_reservation_url = ${event.sanitizedReservationUrl},
-          source_content_hash = ${event.contentHash}, last_seen_at = now(),
-          active = true, historical = false, archived_at = null where id = ${existingId}
-      `;
-    }
-    if (plan.archive.length) {
-      await tx`
-        update public.external_calendar_events set active = false, historical = false, archived_at = coalesce(archived_at, now())
-        where id in ${tx(plan.archive)}
-      `;
-    }
-    if (plan.retainHistory.length) {
-      await tx`
-        update public.external_calendar_events set active = false, historical = true, archived_at = coalesce(archived_at, now())
-        where id in ${tx(plan.retainHistory)}
-      `;
-    }
-    if (incoming.length) {
-      await tx`
-        update public.external_calendar_events set last_seen_at = now()
-        where listing_id = ${listingId} and source_uid in ${tx(incoming.map((event) => event.sourceUid))}
-      `;
-    }
-  });
-  return { created: plan.create.length, updated: plan.update.length, archived: plan.archive.length };
+      if (!listing) throw new Error("LISTING_NOT_FOUND");
+      const propertyId = listing.property_id;
+      return inventory.withPropertyInventory(propertyId, async (tx) => {
+        const rows = await tx<{
+          id: string; source_uid: string; source_content_hash: string; start_date: string;
+          end_date: string; active: boolean; historical: boolean;
+        }[]>`
+          select id, source_uid, source_content_hash, start_date::text, end_date::text, active, historical
+          from public.external_calendar_events where listing_id = ${listingId}
+        `;
+        const existing = rows.map((row) => ({
+          id: row.id, sourceUid: row.source_uid, contentHash: row.source_content_hash,
+          startDate: row.start_date, endDate: row.end_date, active: row.active, historical: row.historical,
+        }));
+        const plan = planReconciliation(existing, incoming, todayDate);
+        const changedExistingIds = new Set([
+          ...plan.update.map(({ existingId }) => existingId),
+          ...plan.archive,
+          ...plan.retainHistory,
+        ]);
+        const bounds = affectedReconciliationBounds(
+          existing.filter((event) => changedExistingIds.has(event.id)),
+          incoming,
+        );
+
+        for (const event of plan.create) {
+          await tx`
+            insert into public.external_calendar_events (
+              listing_id, source_uid, event_type, start_date, end_date,
+              sanitized_reservation_url, source_content_hash, active, historical, archived_at
+            ) values (
+              ${listingId}, ${event.sourceUid}, ${event.eventType}, ${event.startDate}, ${event.endDate},
+              ${event.sanitizedReservationUrl}, ${event.contentHash}, true, false, null
+            )
+            on conflict (listing_id, source_uid) do update set
+              event_type = excluded.event_type, start_date = excluded.start_date,
+              end_date = excluded.end_date, sanitized_reservation_url = excluded.sanitized_reservation_url,
+              source_content_hash = excluded.source_content_hash, last_seen_at = now(),
+              active = true, historical = false, archived_at = null
+          `;
+        }
+        for (const { existingId, event } of plan.update) {
+          await tx`
+            update public.external_calendar_events set event_type = ${event.eventType},
+              start_date = ${event.startDate}, end_date = ${event.endDate},
+              sanitized_reservation_url = ${event.sanitizedReservationUrl},
+              source_content_hash = ${event.contentHash}, last_seen_at = now(),
+              active = true, historical = false, archived_at = null where id = ${existingId}
+          `;
+        }
+        if (plan.archive.length) {
+          await tx`
+            update public.external_calendar_events set active = false, historical = false, archived_at = coalesce(archived_at, now())
+            where id in ${tx(plan.archive)}
+          `;
+        }
+        if (plan.retainHistory.length) {
+          await tx`
+            update public.external_calendar_events set active = false, historical = true, archived_at = coalesce(archived_at, now())
+            where id in ${tx(plan.retainHistory)}
+          `;
+        }
+        if (incoming.length) {
+          await tx`
+            update public.external_calendar_events set last_seen_at = now()
+            where listing_id = ${listingId} and source_uid in ${tx(incoming.map((event) => event.sourceUid))}
+          `;
+        }
+
+        if (bounds && inventoryMode === "enforced") {
+          await tx`
+            update public.inventory_nights i
+            set status = 'released', release_reason = 'airbnb_calendar_block', released_at = now(), updated_at = now()
+            from public.bookings b
+            where i.property_id = ${propertyId} and i.booking_id = b.id
+              and i.source_kind = 'website_hold' and i.status = 'active'
+              and b.razorpay_payment_id is null
+              and b.status in ('processing', 'held', 'payment_pending')
+              and exists (
+                select 1 from public.external_calendar_events e
+                join public.listings l on l.id = e.listing_id
+                where l.property_id = ${propertyId} and e.active = true and e.archived_at is null
+                  and e.event_type in ('unavailable', 'unknown')
+                  and e.start_date <= i.stay_date and e.end_date > i.stay_date
+              )
+          `;
+        }
+
+        const collisionRows = bounds ? await tx<{ booking_id: string; stay_dates: string[] }[]>`
+          select i.booking_id, array_agg(distinct i.stay_date::text order by i.stay_date::text) as stay_dates
+          from public.inventory_nights i
+          where i.property_id = ${propertyId} and i.status = 'active'
+            and i.source_kind in ('website_hold', 'website_booking')
+            and exists (
+              select 1 from public.external_calendar_events e
+              join public.listings l on l.id = e.listing_id
+              where l.property_id = ${propertyId} and e.active = true and e.archived_at is null
+                and e.event_type = 'reservation'
+                and e.start_date <= i.stay_date and e.end_date > i.stay_date
+            )
+          group by i.booking_id
+          order by i.booking_id
+        ` : [];
+
+        if (bounds) {
+          await reconcilePropertyNights(tx, propertyId, bounds.startDate, bounds.endDate);
+          if (inventoryMode === "shadow") {
+            await recordPropertyShadowMismatches(tx, propertyId, bounds.startDate, bounds.endDate);
+          }
+        }
+        return {
+          created: plan.create.length,
+          updated: plan.update.length,
+          archived: plan.archive.length,
+          collisions: collisionRows.map((row) => ({ bookingId: row.booking_id, stayDates: row.stay_dates })),
+        };
+      });
+    },
+  };
 }
 
 async function syncListing(listing: SyncListing, source: SyncSource) {
@@ -86,7 +154,11 @@ async function syncListing(listing: SyncListing, source: SyncSource) {
     if (!key) throw new Error("sync_configuration_error");
     const feedText = await fetchCalendar(openSecret(listing.encrypted_url, key));
     const incoming = parseAirbnbCalendar(feedText);
-    const counts = await applyReconciliation(listing.id, incoming);
+    const counts = await createSyncReconciliationService(sql, getInventoryLedgerMode()).applyReconciliation(
+      listing.id,
+      incoming,
+      formatInTimeZone(new Date(), "Asia/Kolkata", "yyyy-MM-dd"),
+    );
     await sql.begin(async (tx) => {
       await tx`
         update public.sync_runs set completed_at = now(), status = 'success', fetched_event_count = ${incoming.length},

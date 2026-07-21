@@ -10,6 +10,18 @@ export type ExistingCalendarEvent = {
   historical: boolean;
 };
 
+export function affectedReconciliationBounds(
+  existing: Array<Pick<ExistingCalendarEvent, "startDate" | "endDate">>,
+  incoming: Array<Pick<NormalizedCalendarEvent, "startDate" | "endDate">>,
+) {
+  const ranges = [...existing, ...incoming];
+  if (ranges.length === 0) return null;
+  return {
+    startDate: ranges.reduce((earliest, event) => event.startDate < earliest ? event.startDate : earliest, ranges[0].startDate),
+    endDate: ranges.reduce((latest, event) => event.endDate > latest ? event.endDate : latest, ranges[0].endDate),
+  };
+}
+
 export function planReconciliation(
   existing: ExistingCalendarEvent[],
   incoming: NormalizedCalendarEvent[],

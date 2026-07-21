@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planReconciliation, type ExistingCalendarEvent } from "./reconcile";
+import { affectedReconciliationBounds, planReconciliation, type ExistingCalendarEvent } from "./reconcile";
 
 const incoming = (sourceUid: string, contentHash = "same") => ({
   sourceUid,
@@ -78,5 +78,13 @@ describe("feed reconciliation", () => {
       "2026-07-19",
     );
     expect(plan.update.map(({ existingId }) => existingId)).toEqual(["historical"]);
+  });
+
+  it("covers both old and incoming ranges when dates move or events disappear", () => {
+    expect(affectedReconciliationBounds(
+      [existing({ id: "old", sourceUid: "old", startDate: "2026-08-10", endDate: "2026-08-12" })],
+      [incoming("new")],
+    )).toEqual({ startDate: "2026-07-18", endDate: "2026-08-12" });
+    expect(affectedReconciliationBounds([], [])).toBeNull();
   });
 });

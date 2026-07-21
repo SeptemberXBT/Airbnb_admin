@@ -11,5 +11,8 @@ describe("calendar sync history persistence", () => {
     expect(source).toMatch(/active = true, historical = false, archived_at = null/i);
     expect(source).toMatch(/active = false, historical = false, archived_at = coalesce\(archived_at, now\(\)\)/i);
     expect(source).toMatch(/active = false, historical = true, archived_at = coalesce\(archived_at, now\(\)\)/i);
+    expect(source).toMatch(/select[^;]*property_id[^;]*from public\.listings/is);
+    expect(source).toMatch(/withPropertyInventory\(propertyId/i);
+    expect(source).toMatch(/reconcilePropertyNights\(/i);
   });
 });
