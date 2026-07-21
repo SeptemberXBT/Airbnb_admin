@@ -108,9 +108,10 @@ uses a 70-second timeout and two transport retries, and exits non-zero for HTTP
 errors. Send `/var/log/haven-sync.log` to the server's existing monitoring.
 
 The booking trigger runs every minute with its separate `BOOKING_CRON_SECRET`.
-It reconciles expired holds against Razorpay before release, queued payment
-checks, full refunds, ZeptoMail outbox delivery, nonce cleanup, stale leases, and
-expired idempotency response bodies. Monitor `/var/log/haven-booking-jobs.log`
+It recovers ambiguous Razorpay orders by receipt, reconciles expired holds
+against Razorpay before release, processes queued payment checks, full refunds,
+ZeptoMail outbox delivery, nonce cleanup, stale leases, and expired idempotency
+response bodies. Monitor `/var/log/haven-booking-jobs.log`
 and alert when `/api/health` reports `bookingWorker: stale` for more than three
 minutes. The cron response contains counts only—never guest details or provider
 credentials.

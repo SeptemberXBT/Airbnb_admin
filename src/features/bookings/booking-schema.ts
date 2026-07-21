@@ -9,6 +9,13 @@ const stayFields = {
   guests: z.number().int().min(1).max(20),
 };
 
+export const MAX_PUBLIC_STAY_NIGHTS = 30;
+export const MAX_PUBLIC_BOOKING_HORIZON_DAYS = 365;
+
+function stayDay(value: string) {
+  return Date.parse(`${value}T00:00:00.000Z`) / 86_400_000;
+}
+
 function validateStay<T extends z.ZodRawShape>(shape: T, todayDate: string) {
   return z.object(shape).strict().superRefine((value, context) => {
     const stay = value as { checkin: string; checkout: string };
@@ -17,6 +24,17 @@ function validateStay<T extends z.ZodRawShape>(shape: T, todayDate: string) {
     }
     if (stay.checkout <= stay.checkin) {
       context.addIssue({ code: "custom", message: "Checkout must be after check-in", path: ["checkout"] });
+    }
+    const checkinDay = stayDay(stay.checkin);
+    const checkoutDay = stayDay(stay.checkout);
+    const todayDay = stayDay(todayDate);
+    if (Number.isFinite(checkinDay) && Number.isFinite(checkoutDay)
+      && checkoutDay - checkinDay > MAX_PUBLIC_STAY_NIGHTS) {
+      context.addIssue({ code: "custom", message: "Stay exceeds maximum length", path: ["checkout"] });
+    }
+    if (Number.isFinite(checkinDay) && Number.isFinite(todayDay)
+      && checkinDay - todayDay > MAX_PUBLIC_BOOKING_HORIZON_DAYS) {
+      context.addIssue({ code: "custom", message: "Check-in exceeds booking horizon", path: ["checkin"] });
     }
   });
 }

@@ -82,13 +82,32 @@ export function createNotificationOutboxService(
           `;
           sent += 1;
         } catch {
-          const delayMinutes = Math.min(60, 2 ** Math.min(row.attempt_count, 6));
-          await sql`
-            update public.notification_outbox
-            set status = 'retryable_failure', next_attempt_at = ${new Date(clock().getTime() + delayMinutes * 60_000)},
-              lease_token = null, lease_expires_at = null, last_error_code = 'mail_unavailable', updated_at = ${clock()}
-            where id = ${row.id} and status = 'processing' and lease_token = ${leaseToken}
-          `;
+          if (row.attempt_count >= 8) {
+            await sql.begin(async (tx) => {
+              const [terminal] = await tx<{ booking_id: string }[]>`
+                update public.notification_outbox set status = 'failed', lease_token = null,
+                  lease_expires_at = null, last_error_code = 'mail_retry_exhausted', updated_at = ${clock()}
+                where id = ${row.id} and status = 'processing' and lease_token = ${leaseToken}
+                returning booking_id
+              `;
+              if (terminal) {
+                await tx`
+                  insert into public.booking_events (property_id, booking_id, event_type, metadata)
+                  select b.property_id, b.id, 'notification_delivery_failed',
+                    ${tx.json({ outboxId: row.id, attempts: row.attempt_count })}
+                  from public.bookings b where b.id = ${terminal.booking_id}
+                `;
+              }
+            });
+          } else {
+            const delayMinutes = Math.min(60, 2 ** Math.min(row.attempt_count, 6));
+            await sql`
+              update public.notification_outbox
+              set status = 'retryable_failure', next_attempt_at = ${new Date(clock().getTime() + delayMinutes * 60_000)},
+                lease_token = null, lease_expires_at = null, last_error_code = 'mail_unavailable', updated_at = ${clock()}
+              where id = ${row.id} and status = 'processing' and lease_token = ${leaseToken}
+            `;
+          }
           failed += 1;
         }
       }

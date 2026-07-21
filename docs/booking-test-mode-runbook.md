@@ -83,6 +83,10 @@ night prices. Weekend means Friday and Saturday night. Date overrides take
 precedence over weekend, which takes precedence over weekday. Never copy a price
 from the browser request or invent a launch price.
 
+Public stays are limited to 30 nights and check-in is limited to 365 days from
+the current India stay date. Both public proxy and admin enforce these bounds
+before any nightly enumeration or database lookup.
+
 Required slugs:
 
 ```text
@@ -134,8 +138,11 @@ Never replace both deployments at once and never reuse a key ID.
 7. Confirm a request signed with the retired key returns `401`.
 
 The admin persists nonces, rejects replay with a unique constraint, allows five
-minutes of clock drift, expires nonce rows after ten minutes, and caps each HMAC
-key at 600 accepted requests in that window. Keep both hosts on normal NTP.
+minutes of clock drift, expires nonce rows after ten minutes, and stream-caps
+signed bodies at 8 KiB before buffering. The ten-minute per-key endpoint buckets
+are 600 availability, 60 booking creates, 1,200 status reads, and 120 reconcile
+requests, so search traffic cannot starve payment/status calls. Keep both hosts
+on normal NTP.
 
 ## 5. Razorpay Test Mode
 
@@ -186,6 +193,8 @@ Monitor:
 - `GET /api/health` every minute from outside Vercel;
 - alert after two consecutive non-`200` responses or when
   `bookingWorker=stale` for more than three minutes;
+- alert immediately when `bookingWorker=degraded`; the latest bounded worker
+  batch had failures or a terminal mail/refund item needs attention;
 - `/var/log/haven-booking-jobs.log` for transport/HTTP failures;
 - admin `/bookings` for payment/refund/outbox failures and collision alerts;
 - Razorpay webhook delivery failures and ZeptoMail bounces.
@@ -227,15 +236,22 @@ copying guest PII into the release log.
    browser never labels it failed merely because the request was lost.
 7. An untouched hold expires after ten minutes, reconciles Razorpay first, then
    releases and permits the nights to be claimed again.
-8. Repeating a create call with the same live idempotency UUID returns the same
+8. Abandon an order creation after an ambiguous provider response. The one-minute
+   worker must recover the order by its deterministic receipt and attach it, or
+   release the hold after expiry only when a successful lookup proves no order
+   exists. A provider lookup outage must retain inventory and retry.
+9. Repeating a create call with the same live idempotency UUID returns the same
    result; a live processing lease returns `202` plus `Retry-After`; an expired
    tombstone returns `409` until the guest explicitly submits a new UUID.
-9. Replaying a nonce or webhook event ID has no duplicate effect.
-10. Import a genuine colliding Airbnb reservation. Airbnb wins: website booking
+10. Replaying a nonce or webhook event ID has no duplicate effect.
+11. Import a genuine colliding Airbnb reservation. Airbnb wins: website booking
     becomes `cancelled` with `airbnb_collision`, active nights release, a full
     refund begins, the first email says refund pending, the processed email is
     sent only after provider confirmation, and admin receives an alert.
-11. Manual create/edit/archive and normal Airbnb import still pass under enforced
+12. Force eight consecutive ZeptoMail failures. The outbox becomes terminal
+    `failed`, a `notification_delivery_failed` booking event appears, and health
+    stays degraded until operations resolves it.
+13. Manual create/edit/archive and normal Airbnb import still pass under enforced
     inventory.
 
 Seeing the website-created busy event reach the matching Airbnb calendar is the

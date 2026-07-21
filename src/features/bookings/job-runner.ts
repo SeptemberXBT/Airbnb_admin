@@ -10,11 +10,13 @@ import { createRazorpayClient } from "@/features/payments/razorpay-client";
 import { createRazorpayRefundProvider, createRefundService } from "@/features/payments/refund-service";
 import { createZeptoMailClient } from "@/features/email/zeptomail-client";
 import { createNotificationOutboxService } from "@/features/email/outbox-service";
+import { processOrderRecoveryJobs } from "@/features/payments/order-recovery";
 
 type StageContext = { now: Date; limit: number };
 export type JobStageResult = { processed: number; failed: number };
 type Stage = (context: StageContext) => Promise<JobStageResult>;
 type BookingJobDependencies = {
+  orderRecovery: Stage;
   expiredHolds: Stage;
   paymentReconciliation: Stage;
   refunds: Stage;
@@ -26,6 +28,7 @@ type BookingJobDependencies = {
 };
 
 const stageNames = [
+  "orderRecovery",
   "expiredHolds",
   "paymentReconciliation",
   "refunds",
@@ -62,7 +65,9 @@ export function createBookingJobRunner(
           return [name, { processed: 0, failed: 1 }, true] as const;
         }
       }));
-      const result = { stageFailures: settled.filter(([, , failed]) => failed).length } as BookingJobRunResult;
+      const result = {
+        stageFailures: settled.filter(([, counts, threw]) => threw || counts.failed > 0).length,
+      } as BookingJobRunResult;
       for (const [name, counts] of settled) result[name] = counts;
       await dependencies.recordRun(now, result);
       return result;
@@ -179,6 +184,7 @@ export function createConfiguredBookingJobRunner() {
   const attempts = createAttemptService(sql);
 
   return createBookingJobRunner({
+    orderRecovery: async ({ now, limit }) => processOrderRecoveryJobs(sql, razorpay, { now, limit }),
     expiredHolds: async ({ now, limit }) => processExpiredHolds(sql, reconciliation, { now, limit }),
     paymentReconciliation: async (context) => processPaymentReconciliationJobs(sql, reconciliation, context),
     refunds: async ({ limit }) => {

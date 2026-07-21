@@ -88,6 +88,10 @@ describe("authoritative website booking holds", () => {
       { stay_date: "2026-08-16", price_paise: 500000, price_source: "weekday" },
     ]);
     expect(await testSql`select stay_date from public.inventory_nights where status = 'active'`).toHaveLength(3);
+    await expect(service.getPublicBookingStatus(result.bookingReference)).resolves.toEqual({
+      status: "processing",
+      refundStatus: "not_required",
+    });
 
     await testSql`update public.property_rates set weekday_price_paise = 999999, weekend_price_paise = 999999 where property_id = ${propertyId}`;
     expect(await testSql`select price_paise from public.booking_night_prices order by stay_date`).toEqual([
@@ -139,6 +143,7 @@ describe("authoritative website booking holds", () => {
     const key = randomUUID();
     await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
     expect(await testSql`select id from public.inventory_nights where status = 'active'`).toHaveLength(3);
+    expect(await testSql`select status from public.payment_jobs where job_kind = 'order_recovery'`).toEqual([{ status: "pending" }]);
 
     const [booking] = await testSql<{ public_reference: string; amount_paise: number }[]>`
       select public_reference, amount_paise from public.bookings
@@ -148,6 +153,7 @@ describe("authoritative website booking holds", () => {
     expect(recovered.kind).toBe("created");
     expect(razorpay.createOrder).toHaveBeenCalledOnce();
     expect(razorpay.findOrderByReceipt).toHaveBeenCalledOnce();
+    expect(await testSql`select status from public.payment_jobs where job_kind = 'order_recovery'`).toEqual([{ status: "succeeded" }]);
   });
 
   it("releases a resumed hold when receipt recovery finds no order and creation is definitively rejected", async () => {

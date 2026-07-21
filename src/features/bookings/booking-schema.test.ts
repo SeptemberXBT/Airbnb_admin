@@ -39,4 +39,12 @@ describe("public booking schemas", () => {
     expect(schema.safeParse({ ...stay, checkout: stay.checkin, guestName: "Noir Guest", guestEmail: "guest@example.test", guestPhone: "+919999999999" }).success).toBe(false);
     expect(schema.safeParse({ ...stay, publicRoomSlug: "made-up-room", guestName: "N", guestEmail: "bad", guestPhone: "1" }).success).toBe(false);
   });
+
+  it("bounds public work to 30 nights and a 365-day booking horizon", () => {
+    const schema = createAvailabilityRequestSchema(today);
+    expect(schema.safeParse({ ...stay, checkin: "2026-07-21", checkout: "2026-08-20" }).success).toBe(true);
+    expect(schema.safeParse({ ...stay, checkin: "2026-07-21", checkout: "2026-08-21" }).success).toBe(false);
+    expect(schema.safeParse({ ...stay, checkin: "2027-07-21", checkout: "2027-07-22" }).success).toBe(true);
+    expect(schema.safeParse({ ...stay, checkin: "2027-07-22", checkout: "2027-07-23" }).success).toBe(false);
+  });
 });

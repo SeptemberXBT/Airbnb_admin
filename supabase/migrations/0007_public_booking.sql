@@ -141,6 +141,7 @@ create table public.booking_attempts (
 
 create table public.api_request_nonces (
   key_id text not null,
+  endpoint_bucket text not null,
   nonce uuid not null,
   request_timestamp timestamptz not null,
   expires_at timestamptz not null,

@@ -1,0 +1,169 @@
+import "server-only";
+import { randomUUID } from "node:crypto";
+import type postgres from "postgres";
+import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
+import type { RazorpayOrder } from "./razorpay-client";
+
+type RecoveryProvider = {
+  publicKeyId: string;
+  findOrderByReceipt(receipt: string): Promise<RazorpayOrder | null>;
+};
+
+type RecoveryRow = {
+  job_id: string;
+  attempt_count: number;
+  booking_id: string;
+  property_id: string;
+  public_reference: string;
+  amount_paise: number;
+  currency: "INR";
+  hold_expires_at: Date | string;
+  razorpay_order_id: string | null;
+  booking_status: string;
+};
+
+export function orderReceipt(reference: string) {
+  return `nh_${reference}`;
+}
+
+function validateOrder(order: RazorpayOrder, booking: RecoveryRow) {
+  if (order.amount !== booking.amount_paise || order.currency !== "INR" || order.receipt !== orderReceipt(booking.public_reference)) {
+    throw new Error("INVALID_RECOVERED_ORDER");
+  }
+  return order;
+}
+
+function checkoutResponse(booking: RecoveryRow, orderId: string, publicKeyId: string) {
+  return {
+    kind: "created",
+    bookingReference: booking.public_reference,
+    orderId,
+    amountPaise: booking.amount_paise,
+    currency: booking.currency,
+    razorpayKeyId: publicKeyId,
+    holdExpiresAt: new Date(booking.hold_expires_at).toISOString(),
+  };
+}
+
+async function finishRecoveredOrder(
+  sql: postgres.Sql,
+  row: RecoveryRow,
+  orderId: string,
+  publicKeyId: string,
+  now: Date,
+) {
+  const response = checkoutResponse(row, orderId, publicKeyId);
+  await sql.begin(async (tx) => {
+    const [saved] = await tx<{ razorpay_order_id: string }[]>`
+      update public.bookings set razorpay_order_id = coalesce(razorpay_order_id, ${orderId}), updated_at = ${now}
+      where id = ${row.booking_id} and (razorpay_order_id is null or razorpay_order_id = ${orderId})
+      returning razorpay_order_id
+    `;
+    if (!saved || saved.razorpay_order_id !== orderId) throw new Error("ORDER_ID_CONFLICT");
+    await tx`
+      update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
+        terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
+        last_error_code = null, updated_at = ${now}
+      where id = ${row.job_id}
+    `;
+    await tx`
+      update public.booking_attempts set status = 'succeeded', durable_step = 'razorpay_order_created',
+        terminal_http_status = 201, terminal_response = ${tx.json(response)},
+        replay_until = ${new Date(now.getTime() + 30 * 60_000)}, lease_token = null,
+        lease_expires_at = null, updated_at = ${now}
+      where booking_id = ${row.booking_id}
+        and (status = 'retryable_failure' or (status = 'processing' and lease_expires_at <= ${now}))
+    `;
+  });
+}
+
+async function releaseExpiredOrderlessHold(sql: postgres.Sql, row: RecoveryRow, now: Date) {
+  const inventory = createInventoryService(sql);
+  await inventory.withPropertyInventory(row.property_id, async (tx) => {
+    const [released] = await tx<{ id: string }[]>`
+      update public.bookings set status = 'payment_failed', updated_at = ${now}
+      where id = ${row.booking_id} and razorpay_order_id is null
+        and status in ('processing', 'held', 'payment_pending')
+      returning id
+    `;
+    if (!released) throw new Error("ORDER_RECOVERY_STATE_CHANGED");
+    await releaseSourceNights(tx, "website_hold", row.booking_id, "razorpay_order_not_found");
+    await tx`
+      update public.payment_jobs set status = 'definitive_failure', last_error_code = 'order_not_found',
+        lease_token = null, lease_expires_at = null, updated_at = ${now}
+      where id = ${row.job_id}
+    `;
+    await tx`
+      update public.booking_attempts set status = 'definitive_failure', terminal_http_status = 503,
+        terminal_response = ${tx.json({ error: "payment_order_failed" })},
+        replay_until = ${new Date(now.getTime() + 30 * 60_000)}, lease_token = null,
+        lease_expires_at = null, updated_at = ${now}
+      where booking_id = ${row.booking_id}
+    `;
+    await tx`
+      insert into public.booking_events (property_id, booking_id, event_type, metadata)
+      values (${row.property_id}, ${row.booking_id}, 'payment_order_failed', ${tx.json({ reason: "order_not_found" })})
+    `;
+  });
+}
+
+export async function processOrderRecoveryJobs(
+  sql: postgres.Sql,
+  provider: RecoveryProvider,
+  options: { now?: Date; limit?: number } = {},
+) {
+  const now = options.now ?? new Date();
+  const limit = options.limit ?? 25;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_ORDER_RECOVERY_LIMIT");
+  const leaseToken = randomUUID();
+  const rows = await sql<RecoveryRow[]>`
+    with ready as (
+      select id from public.payment_jobs
+      where job_kind = 'order_recovery' and status in ('pending', 'retryable_failure')
+        and next_attempt_at <= ${now}
+      order by next_attempt_at, created_at limit ${limit} for update skip locked
+    )
+    update public.payment_jobs j set status = 'processing', lease_token = ${leaseToken},
+      lease_expires_at = ${new Date(now.getTime() + 60_000)}, attempt_count = attempt_count + 1,
+      updated_at = ${now}
+    from ready, public.bookings b
+    where j.id = ready.id and b.id = j.booking_id
+    returning j.id as job_id, j.attempt_count, b.id as booking_id, b.property_id,
+      b.public_reference, b.amount_paise, b.currency, b.hold_expires_at,
+      b.razorpay_order_id, b.status as booking_status
+  `;
+  let processed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      if (row.razorpay_order_id) {
+        await finishRecoveredOrder(sql, row, row.razorpay_order_id, provider.publicKeyId, now);
+        processed += 1;
+        continue;
+      }
+      const order = await provider.findOrderByReceipt(orderReceipt(row.public_reference));
+      if (order) {
+        await finishRecoveredOrder(sql, row, validateOrder(order, row).id, provider.publicKeyId, now);
+        processed += 1;
+      } else if (new Date(row.hold_expires_at).getTime() <= now.getTime()) {
+        await releaseExpiredOrderlessHold(sql, row, now);
+        processed += 1;
+      } else {
+        await sql`
+          update public.payment_jobs set status = 'retryable_failure', next_attempt_at = ${new Date(now.getTime() + 30_000)},
+            lease_token = null, lease_expires_at = null, last_error_code = 'order_not_visible', updated_at = ${now}
+          where id = ${row.job_id} and lease_token = ${leaseToken}
+        `;
+      }
+    } catch {
+      const delayMinutes = Math.min(10, 2 ** Math.min(row.attempt_count, 4));
+      await sql`
+        update public.payment_jobs set status = 'retryable_failure', next_attempt_at = ${new Date(now.getTime() + delayMinutes * 60_000)},
+          lease_token = null, lease_expires_at = null, last_error_code = 'order_recovery_failed', updated_at = ${now}
+        where id = ${row.job_id} and lease_token = ${leaseToken}
+      `;
+      failed += 1;
+    }
+  }
+  return { processed, failed };
+}

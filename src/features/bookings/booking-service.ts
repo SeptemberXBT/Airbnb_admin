@@ -10,6 +10,7 @@ import {
   type RazorpayClient,
   type RazorpayOrder,
 } from "@/features/payments/razorpay-client";
+import { orderReceipt } from "@/features/payments/order-recovery";
 import { createAttemptService } from "./attempt-service";
 import {
   createAvailabilityRequestSchema,
@@ -61,10 +62,6 @@ function requestHash(request: CreateBookingRequest) {
 
 function publicReference() {
   return `NH-${randomUUID().replaceAll("-", "").slice(0, 20).toUpperCase()}`;
-}
-
-function receiptFor(reference: string) {
-  return `nh_${reference}`;
 }
 
 function asIso(value: Date | string) {
@@ -133,7 +130,7 @@ function validateExpectedOrder(order: RazorpayOrder, booking: StoredBooking) {
   if (
     order.amount !== booking.amount_paise
     || order.currency !== "INR"
-    || order.receipt !== receiptFor(booking.public_reference)
+    || order.receipt !== orderReceipt(booking.public_reference)
   ) throw new RazorpayClientError("ambiguous", "RAZORPAY_INVALID_RESPONSE");
   return order;
 }
@@ -231,6 +228,11 @@ export function createBookingService(
         insert into public.booking_events (property_id, booking_id, event_type, metadata)
         values (${booking.property_id}, ${booking.id}, 'payment_order_failed', '{}')
       `;
+      await tx`
+        update public.payment_jobs set status = 'definitive_failure', last_error_code = 'order_rejected',
+          lease_token = null, lease_expires_at = null, updated_at = ${clock()}
+        where booking_id = ${booking.id} and job_kind = 'order_recovery'
+      `;
     });
   }
 
@@ -291,6 +293,12 @@ export function createBookingService(
 
       if (booking.razorpay_order_id) {
         const response = checkoutResponse(booking, booking.razorpay_order_id, dependencies.razorpay.publicKeyId);
+        await sql`
+          update public.payment_jobs set status = 'succeeded', provider_id = ${booking.razorpay_order_id},
+            terminal_result = ${sql.json(response)}, lease_token = null, lease_expires_at = null,
+            last_error_code = null, updated_at = ${clock()}
+          where booking_id = ${booking.id} and job_kind = 'order_recovery'
+        `;
         await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {
           status: "succeeded", httpStatus: 201, response,
         });
@@ -298,7 +306,15 @@ export function createBookingService(
       }
 
       await attempts.recordProgress(idempotencyKey, acquisition.leaseToken, "razorpay_order_pending");
-      const receipt = receiptFor(booking.public_reference);
+      await sql`
+        insert into public.payment_jobs (
+          booking_id, job_kind, idempotency_identity, status, next_attempt_at
+        ) values (
+          ${booking.id}, 'order_recovery', ${`order-recovery:${booking.id}`}, 'pending',
+          ${new Date(clock().getTime() + 60_000)}
+        ) on conflict (idempotency_identity) do nothing
+      `;
+      const receipt = orderReceipt(booking.public_reference);
       let providerOrder: RazorpayOrder;
       let recovered: RazorpayOrder | null = null;
       if (acquisition.resumed) {
@@ -346,6 +362,12 @@ export function createBookingService(
           returning idempotency_key
         `;
         if (!attempt) throw new Error("ATTEMPT_LEASE_LOST");
+        await tx`
+          update public.payment_jobs set status = 'succeeded', provider_id = ${providerOrder.id},
+            terminal_result = ${tx.json(checkoutResponse(booking, providerOrder.id, dependencies.razorpay.publicKeyId))},
+            lease_token = null, lease_expires_at = null, last_error_code = null, updated_at = ${clock()}
+          where booking_id = ${booking.id} and job_kind = 'order_recovery'
+        `;
       });
       booking = { ...booking, razorpay_order_id: providerOrder.id };
       const response = checkoutResponse(booking, providerOrder.id, dependencies.razorpay.publicKeyId);
@@ -360,7 +382,10 @@ export function createBookingService(
         select status, refund_status from public.bookings where public_reference = ${reference}
       `;
       if (!booking) throw new BookingServiceError("BOOKING_NOT_FOUND", 404);
-      return { status: booking.status, refundStatus: booking.refund_status };
+      return {
+        status: booking.status === "held" ? "processing" : booking.status,
+        refundStatus: booking.refund_status,
+      };
     },
   };
 }

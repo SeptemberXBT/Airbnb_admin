@@ -10,6 +10,7 @@ function stage(processed: number, failed = 0) {
 describe("booking job runner", () => {
   it("runs every bounded stage with a fixed clock and records count-only freshness", async () => {
     const dependencies = {
+      orderRecovery: stage(1),
       expiredHolds: stage(2),
       paymentReconciliation: stage(3, 1),
       refunds: stage(4),
@@ -27,6 +28,7 @@ describe("booking job runner", () => {
       expect(dependency).toHaveBeenCalledWith({ now: NOW, limit: 25 });
     }
     expect(result).toEqual({
+      orderRecovery: { processed: 1, failed: 0 },
       expiredHolds: { processed: 2, failed: 0 },
       paymentReconciliation: { processed: 3, failed: 1 },
       refunds: { processed: 4, failed: 0 },
@@ -34,7 +36,7 @@ describe("booking job runner", () => {
       nonceCleanup: { processed: 6, failed: 0 },
       staleLeaseRecovery: { processed: 7, failed: 0 },
       replayBodyCleanup: { processed: 8, failed: 0 },
-      stageFailures: 0,
+      stageFailures: 1,
     });
     expect(dependencies.recordRun).toHaveBeenCalledWith(NOW, result);
     expect(JSON.stringify(result)).not.toMatch(/email|guest|token|secret/i);
@@ -43,6 +45,7 @@ describe("booking job runner", () => {
   it("does not abort unrelated stages when one stage throws", async () => {
     const notifications = stage(1);
     const dependencies = {
+      orderRecovery: stage(1),
       expiredHolds: vi.fn(async () => { throw new Error("provider leaked detail"); }),
       paymentReconciliation: stage(1),
       refunds: stage(1),

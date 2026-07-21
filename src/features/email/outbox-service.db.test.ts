@@ -52,4 +52,25 @@ describe("notification outbox", () => {
     expect(rows).toContainEqual({ status: "retryable_failure", attempt_count: 1, last_error_code: "mail_unavailable" });
     expect(rows).toContainEqual({ status: "sent", attempt_count: 1, last_error_code: null });
   });
+
+  it("marks the eighth provider failure terminal and emits an admin-visible booking event", async () => {
+    await enqueueNotification(testSql, {
+      bookingId, recipientKind: "guest", recipientEmail: "guest@example.test",
+      templateKey: "booking_confirmation", deduplicationKey: `terminal-mail:${bookingId}`,
+      subject: "Confirmed", htmlBody: "<p>Confirmed</p>", textBody: "Confirmed",
+    });
+    await testSql`update public.notification_outbox set attempt_count = 7`;
+    const service = createNotificationOutboxService(testSql, {
+      mailer: { send: vi.fn(async () => { throw new Error("provider unavailable"); }) },
+      clock: () => NOW,
+    });
+
+    expect(await service.processBatch(10)).toEqual({ sent: 0, failed: 1 });
+    await expect(testSql`select status, attempt_count, last_error_code from public.notification_outbox`).resolves.toEqual([
+      { status: "failed", attempt_count: 8, last_error_code: "mail_retry_exhausted" },
+    ]);
+    await expect(testSql`select event_type from public.booking_events`).resolves.toEqual([
+      { event_type: "notification_delivery_failed" },
+    ]);
+  });
 });

@@ -13,6 +13,7 @@ export async function processExpiredHolds(
   const bookings = await sql<{ public_reference: string }[]>`
     select public_reference from public.bookings
     where status in ('processing', 'held', 'payment_pending')
+      and razorpay_order_id is not null
       and hold_expires_at is not null and hold_expires_at <= ${now}
     order by hold_expires_at, created_at
     limit ${limit}
