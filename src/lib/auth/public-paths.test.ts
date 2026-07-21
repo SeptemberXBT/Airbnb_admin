@@ -13,6 +13,7 @@ describe("public path policy", () => {
     expect(isPublicPath?.("/auth/callback")).toBe(true);
     expect(isPublicPath?.("/api/health")).toBe(true);
     expect(isPublicPath?.("/api/sync/cron")).toBe(true);
+    expect(isPublicPath?.("/api/bookings/cron")).toBe(true);
     expect(isPublicPath?.("/api/ical/random-token.ics")).toBe(true);
     expect(isPublicPath?.("/api/internal/v1/availability")).toBe(true);
     expect(isPublicPath?.("/api/internal/v1/bookings/NH-REFERENCE/reconcile")).toBe(true);

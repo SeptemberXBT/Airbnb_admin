@@ -1,2 +1,4 @@
 # Load APP_URL and SYNC_SECRET from a root-readable file (chmod 600).
 */15 * * * * . /etc/haven-operations.env && /opt/haven-operations/ops/trigger-sync.sh >> /var/log/haven-sync.log 2>&1
+# Reconcile holds, payments, refunds, mail, nonces, and stale leases every minute.
+* * * * * . /etc/haven-operations.env && /opt/haven-operations/ops/trigger-booking-jobs.sh >> /var/log/haven-booking-jobs.log 2>&1

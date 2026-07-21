@@ -5,8 +5,8 @@
 1. Create a Supabase project in the India region when available.
 2. Apply the migrations in filename order: `0001_initial.sql`,
    `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
-   `0004_shared_admin_workspace.sql`, `0005_manual_entry_payment.sql`, then
-   `0006_preserve_airbnb_history.sql`.
+   `0004_shared_admin_workspace.sql`, `0005_manual_entry_payment.sql`,
+   `0006_preserve_airbnb_history.sql`, then `0007_public_booking.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -31,6 +31,12 @@ the new `historical` column. It safely restores previously archived rows only
 when the database proves they were still observed on or after check-in; it
 cannot reconstruct stays that the application never imported.
 
+Migration `0007` adds authoritative website rates, immutable booking-night price
+snapshots, payment attempts, ten-minute holds, the partial active-night inventory
+index, provider event/job tables, notification outbox, and booking audit events.
+Keep `INVENTORY_LEDGER_MODE=shadow` and `PUBLIC_BOOKING_ENABLED=false` through the
+manual-entry/iCal parity gate. Applying the migration does not enable public sales.
+
 ## 2. Secrets
 
 Generate values locally and store them only in Supabase/Vercel/server secret
@@ -39,6 +45,8 @@ stores:
 ```sh
 openssl rand -base64 32 # ICAL_ENCRYPTION_KEY
 openssl rand -hex 32    # SYNC_SECRET
+openssl rand -hex 32    # BOOKING_API_HMAC_SECRET
+openssl rand -hex 32    # BOOKING_CRON_SECRET (must be a different value)
 ```
 
 Set these Vercel variables for Preview and Production:
@@ -49,6 +57,22 @@ Set these Vercel variables for Preview and Production:
 - `SYNC_SECRET`
 - `ICAL_ENCRYPTION_KEY`
 - `APP_URL`
+- `BOOKING_API_KEY_ID`
+- `BOOKING_API_HMAC_SECRET`
+- `RAZORPAY_KEY_ID` (a `rzp_test_...` key during this rollout)
+- `RAZORPAY_KEY_SECRET`
+- `RAZORPAY_WEBHOOK_SECRET`
+- `ZEPTOMAIL_TOKEN`
+- `ZEPTOMAIL_SENDER_ADDRESS`
+- `ZEPTOMAIL_SENDER_NAME`
+- `ADMIN_NOTIFICATION_EMAIL`
+- `BOOKING_CRON_SECRET`
+- `INVENTORY_LEDGER_MODE=shadow`
+- `PUBLIC_BOOKING_ENABLED=false`
+
+Set `BOOKING_API_PREVIOUS_KEY_ID` and `BOOKING_API_PREVIOUS_HMAC_SECRET` only
+during an intentional HMAC key rotation. Never put database, Razorpay, ZeptoMail,
+webhook, cron, or HMAC secrets in `NEXT_PUBLIC_*` variables.
 
 Do not set `DEMO_MODE` in Vercel. The application ignores demo bypasses in
 production, but omitting it keeps the intent explicit.
@@ -61,6 +85,13 @@ Import this repository, set the environment variables, and deploy. Confirm:
 - `/calendar` redirects to `/login` without a session.
 - `/api/sync/cron` returns `401` without the bearer secret.
 - `/api/health` returns `200`.
+- `/api/bookings/cron` returns `401` without its dedicated bearer secret.
+- `/api/internal/v1/availability` returns a controlled `503` while
+  `PUBLIC_BOOKING_ENABLED=false`.
+
+Immediately after a new environment starts, `/api/health` can return `503` with
+coarse `bookingWorker: stale` until the first one-minute worker run completes.
+It never lists missing configuration names or secret values.
 
 ## 4. Existing server trigger
 
@@ -72,9 +103,17 @@ APP_URL=https://your-vercel-domain.example
 SYNC_SECRET=the-same-secret-stored-in-vercel
 ```
 
-Install the line from `ops/crontab.example`. The trigger runs every 15 minutes,
+Install both lines from `ops/crontab.example`. The Airbnb trigger runs every 15 minutes,
 uses a 70-second timeout and two transport retries, and exits non-zero for HTTP
 errors. Send `/var/log/haven-sync.log` to the server's existing monitoring.
+
+The booking trigger runs every minute with its separate `BOOKING_CRON_SECRET`.
+It reconciles expired holds against Razorpay before release, queued payment
+checks, full refunds, ZeptoMail outbox delivery, nonce cleanup, stale leases, and
+expired idempotency response bodies. Monitor `/var/log/haven-booking-jobs.log`
+and alert when `/api/health` reports `bookingWorker: stale` for more than three
+minutes. The cron response contains counts only—never guest details or provider
+credentials.
 
 ## 5. One-listing pilot
 

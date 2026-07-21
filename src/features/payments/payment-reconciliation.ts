@@ -10,7 +10,7 @@ import { renderEmailTemplate } from "@/features/email/templates";
 
 type PaymentSql = postgres.Sql;
 type PaymentLookup = { fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
-export type ReconciliationTrigger = "client_callback" | "checkout_dismissed" | "hold_expiry" | "webhook";
+export type ReconciliationTrigger = "client_callback" | "checkout_dismissed" | "hold_expiry" | "webhook" | "worker";
 
 type BookingRow = {
   id: string;

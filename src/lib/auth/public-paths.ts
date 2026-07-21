@@ -1,4 +1,4 @@
-const exactPublicPaths = new Set(["/login", "/auth/callback", "/api/health", "/api/sync/cron"]);
+const exactPublicPaths = new Set(["/login", "/auth/callback", "/api/health", "/api/sync/cron", "/api/bookings/cron"]);
 
 export function isPublicPath(pathname: string) {
   return exactPublicPaths.has(pathname)
