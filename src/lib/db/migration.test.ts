@@ -154,6 +154,18 @@ describe("initial database migration", () => {
     expect(down).toMatch(/drop table if exists public\.payment_refund_job_aliases/i);
   });
 
+  it("supports an explicit disconnected inbound iCal state", async () => {
+    const [up, down] = await Promise.all([
+      readFile(path.join(process.cwd(), "supabase/migrations/0009_optional_inbound_ical.sql"), "utf8"),
+      readFile(path.join(process.cwd(), "supabase/migrations/0009_optional_inbound_ical.down.sql"), "utf8"),
+    ]);
+
+    expect(up).toMatch(/alter table public\.listings[\s\S]*inbound_ical_url_encrypted drop not null/i);
+    expect(down).toMatch(/inbound_ical_url_encrypted is null/i);
+    expect(down).toMatch(/raise exception 'cannot require inbound ical while disconnected listings exist'/i);
+    expect(down).toMatch(/inbound_ical_url_encrypted set not null/i);
+  });
+
   it("defines the one-minute Supabase booking worker without committing secrets", async () => {
     const up = await readFile(path.join(process.cwd(), "ops/setup-supabase-booking-worker.sql"), "utf8");
     expect(up).toMatch(/create extension if not exists pg_cron/i);
