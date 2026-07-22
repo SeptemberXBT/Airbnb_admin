@@ -298,6 +298,12 @@ git commit -m "fix: skip disconnected iCal listings during sync"
 
 - [ ] **Step 1: Replace the contract tests with mode-complete expectations**
 
+Add the destination administrator to the existing `config` fixture:
+
+```js
+MIGRATION_ACTOR_EMAIL: "admin@example.test",
+```
+
 Keep the fingerprint test and change the CLI/config tests to:
 
 ```js
