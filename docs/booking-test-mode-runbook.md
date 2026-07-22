@@ -55,6 +55,7 @@ ZEPTOMAIL_SENDER_NAME
 ADMIN_NOTIFICATION_EMAIL
 BOOKING_CRON_SECRET
 INVENTORY_LEDGER_MODE
+PUBLIC_AVAILABILITY_ENABLED
 PUBLIC_BOOKING_ENABLED
 ```
 
@@ -74,6 +75,19 @@ Rules:
 - `APP_URL` is the exact admin deployment origin.
 - Keep both production flags at `INVENTORY_LEDGER_MODE=enforced` and
   `PUBLIC_BOOKING_ENABLED=false` during Preview acceptance.
+
+The public API rollout supports these fail-closed states:
+
+```text
+availability=false, booking=false  -> all public API operations disabled
+availability=true,  booking=false  -> quotes enabled; booking creation disabled
+availability=any,   booking=true   -> quotes and booking creation enabled
+```
+
+The availability-only state does not require Razorpay, ZeptoMail, or a healthy
+booking worker because a quote creates no booking, hold, payment, or email
+state. `PUBLIC_AVAILABILITY_ENABLED` must equal `true` exactly; missing or
+invalid values remain disabled unless full public booking is enabled.
 
 ## 3. Eight-room pricing gate
 
