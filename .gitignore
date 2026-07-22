@@ -5,6 +5,7 @@ playwright-report/
 test-results/
 .env*
 !.env.example
+!.env.migration.example
 .DS_Store
 *.log
 *.tsbuildinfo

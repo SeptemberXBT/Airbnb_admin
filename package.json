@@ -13,7 +13,8 @@
     "test:db": "vitest run --config vitest.db.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "backfill:inventory": "node --conditions=react-server --import tsx scripts/backfill-booking-inventory.mjs"
+    "backfill:inventory": "node --conditions=react-server --import tsx scripts/backfill-booking-inventory.mjs",
+    "data:consolidate": "node scripts/consolidate-admin-data.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.0",
