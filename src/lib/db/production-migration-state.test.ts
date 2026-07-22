@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { decidePremiumMigrationAction } from "./production-migration-state";
+import {
+  decidePremiumMigrationAction,
+  validateBookingWorkerUrl,
+} from "./production-migration-state";
 
 describe("decidePremiumMigrationAction", () => {
   it("applies the migration only when every marker is absent", () => {
@@ -20,5 +23,24 @@ describe("decidePremiumMigrationAction", () => {
   it("rejects impossible marker counts", () => {
     expect(() => decidePremiumMigrationAction(-1, 16)).toThrow("Invalid migration marker count");
     expect(() => decidePremiumMigrationAction(17, 16)).toThrow("Invalid migration marker count");
+  });
+});
+
+describe("validateBookingWorkerUrl", () => {
+  it("accepts the exact HTTPS booking worker endpoint", () => {
+    expect(
+      validateBookingWorkerUrl(
+        "https://noirhausadmin-booking-preview.vercel.app/api/bookings/cron",
+      ),
+    ).toBe("https://noirhausadmin-booking-preview.vercel.app/api/bookings/cron");
+  });
+
+  it("rejects insecure or incorrectly scoped worker URLs", () => {
+    expect(() =>
+      validateBookingWorkerUrl("http://noirhausadmin.example/api/bookings/cron"),
+    ).toThrow("Booking worker URL must use HTTPS");
+    expect(() => validateBookingWorkerUrl("https://noirhausadmin.example/api/health")).toThrow(
+      "Booking worker URL must target /api/bookings/cron",
+    );
   });
 });

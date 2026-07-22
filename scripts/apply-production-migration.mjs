@@ -26,6 +26,8 @@ const expectedIndexes = [
 ];
 const expectedMarkerCount =
   expectedColumns.length + expectedConstraints.length + expectedIndexes.length + 1;
+const defaultBookingWorkerUrl =
+  "https://noirhausadmin-booking-preview.vercel.app/api/bookings/cron";
 
 function decidePremiumMigrationAction(presentMarkers, expectedMarkers) {
   if (
@@ -43,6 +45,20 @@ function decidePremiumMigrationAction(presentMarkers, expectedMarkers) {
   throw new Error(
     `Production schema is partially migrated (${presentMarkers}/${expectedMarkers} markers present)`,
   );
+}
+
+function validateBookingWorkerUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "https:") {
+    throw new Error("Booking worker URL must use HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Booking worker URL must not contain credentials, query parameters, or a hash");
+  }
+  if (url.pathname !== "/api/bookings/cron") {
+    throw new Error("Booking worker URL must target /api/bookings/cron");
+  }
+  return url.toString();
 }
 
 async function readSchemaState(sql) {
@@ -94,6 +110,67 @@ function assertComplete(state) {
   }
 }
 
+async function upsertVaultSecret(sql, { name, value, description }) {
+  const existing = await sql`
+    select id::text as id
+    from vault.decrypted_secrets
+    where name = ${name}
+  `;
+  if (existing.length > 1) {
+    throw new Error(`Supabase Vault contains duplicate ${name} secrets`);
+  }
+
+  if (existing[0]) {
+    await sql`
+      select vault.update_secret(
+        ${existing[0].id}::uuid,
+        ${value},
+        ${name},
+        ${description}
+      )
+    `;
+    return;
+  }
+
+  await sql`select vault.create_secret(${value}, ${name}, ${description})`;
+}
+
+async function configureBookingWorker(sql) {
+  const cronSecret = process.env.BOOKING_CRON_SECRET;
+  if (!cronSecret) {
+    throw new Error("BOOKING_CRON_SECRET is required to configure the production worker");
+  }
+  const workerUrl = validateBookingWorkerUrl(
+    process.env.BOOKING_WORKER_URL || defaultBookingWorkerUrl,
+  );
+  const cronPath = path.join(process.cwd(), "ops/setup-supabase-booking-worker.sql");
+  const cronSql = await readFile(cronPath, "utf8");
+
+  await sql.begin(async (transaction) => {
+    await upsertVaultSecret(transaction, {
+      name: "noir_booking_worker_url",
+      value: workerUrl,
+      description: "Noir Haus production booking worker endpoint",
+    });
+    await upsertVaultSecret(transaction, {
+      name: "noir_booking_cron_secret",
+      value: cronSecret,
+      description: "Noir Haus production booking worker bearer secret",
+    });
+    await transaction.unsafe(cronSql);
+  });
+
+  const jobs = await sql`
+    select schedule, active
+    from cron.job
+    where jobname = 'noirhaus-booking-worker-minute'
+  `;
+  if (jobs.length !== 1 || jobs[0].schedule !== "* * * * *" || jobs[0].active !== true) {
+    throw new Error("Production booking worker cron verification failed");
+  }
+  console.log("Production booking worker cron verified (active, every minute).");
+}
+
 async function applyProductionMigration() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -132,6 +209,7 @@ async function applyProductionMigration() {
 
     assertComplete(await readSchemaState(sql));
     console.log(`Production migration 0008 verified (${expectedMarkerCount}/${expectedMarkerCount} markers).`);
+    await configureBookingWorker(sql);
   } finally {
     await sql.end({ timeout: 5 });
   }

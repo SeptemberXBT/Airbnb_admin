@@ -21,3 +21,17 @@ export function decidePremiumMigrationAction(
     `Production schema is partially migrated (${presentMarkers}/${expectedMarkers} markers present)`,
   );
 }
+
+export function validateBookingWorkerUrl(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "https:") {
+    throw new Error("Booking worker URL must use HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Booking worker URL must not contain credentials, query parameters, or a hash");
+  }
+  if (url.pathname !== "/api/bookings/cron") {
+    throw new Error("Booking worker URL must target /api/bookings/cron");
+  }
+  return url.toString();
+}
