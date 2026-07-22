@@ -62,7 +62,12 @@ function addInventoryOwner(owners, row) {
   if (!existing) owners.set(key, row);
 }
 
-export function buildConsolidationPlan({ source, destination, fallbackActorId }) {
+export function buildConsolidationPlan({
+  source,
+  destination,
+  fallbackActorId,
+  manualIcalReattach = false,
+}) {
   if (!fallbackActorId) throw new Error("MISSING_FALLBACK_ACTOR");
   const sourcePropertiesByName = uniqueIdentityMap(rows(source, "properties"), "SOURCE_PROPERTY");
   const destinationPropertiesByName = uniqueIdentityMap(rows(destination, "properties"), "DESTINATION_PROPERTY");
@@ -109,7 +114,7 @@ export function buildConsolidationPlan({ source, destination, fallbackActorId })
       .filter((listing) => normalizeIdentity(listing.display_name) === nameIdentity);
     if (nameMatches.length > 1) throw new Error(`DUPLICATE_DESTINATION_LISTING_IDENTITY:${targetPropertyId}:${nameIdentity}`);
     const match = nameMatches[0];
-    if (match && sourceListing.inbound_ical_url_plaintext
+    if (!manualIcalReattach && match && sourceListing.inbound_ical_url_plaintext
       && match.inbound_ical_url_plaintext
       && sourceListing.inbound_ical_url_plaintext !== match.inbound_ical_url_plaintext) {
       throw new Error(`LISTING_IDENTITY_CONFLICT:${targetPropertyId}:${nameIdentity}`);
@@ -117,7 +122,18 @@ export function buildConsolidationPlan({ source, destination, fallbackActorId })
     const targetId = match?.id ?? sourceListing.id;
     listingMap[sourceListing.id] = targetId;
     if (match) destinationListingMap[match.id] = targetId;
-    listings.push(withoutPlannerFields({ ...sourceListing, id: targetId, property_id: targetPropertyId }));
+    const plannedListing = {
+      ...sourceListing,
+      id: targetId,
+      property_id: targetPropertyId,
+      ...(manualIcalReattach ? {
+        inbound_ical_url_encrypted: null,
+        last_sync_at: null,
+        last_sync_status: null,
+        last_sync_error_code: null,
+      } : {}),
+    };
+    listings.push(withoutPlannerFields(plannedListing));
   }
   if (new Set(listings.map((listing) => listing.id)).size !== listings.length) {
     throw new Error("DUPLICATE_TARGET_LISTING_ID");
@@ -284,6 +300,8 @@ export function buildConsolidationPlan({ source, destination, fallbackActorId })
     counts: {
       properties: properties.length,
       listings: listings.length,
+      disconnectedListings: listings
+        .filter((listing) => listing.inbound_ical_url_encrypted === null).length,
       externalCalendarEvents: externalCalendarEvents.length,
       localCalendarEntries: localCalendarEntries.length + bookingLocalEntries.length,
       inventoryNights: inventoryOwners.size,

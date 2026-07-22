@@ -70,6 +70,41 @@ test("maps matching property/listing identities and preserves pricing and bookin
   assert.equal(plan.actorMap["old-user"], "new-user");
 });
 
+test("manual iCal mode preserves calendar history but clears every inbound secret and sync state", () => {
+  const input = fixture();
+  input.source.external_calendar_events.push({
+    id: "historical-event",
+    listing_id: "old-listing",
+    event_type: "reservation",
+    start_date: "2026-01-10",
+    end_date: "2026-01-12",
+    active: false,
+    historical: true,
+    archived_at: "2026-01-12T00:00:00.000Z",
+  });
+  input.source.listings[0].inbound_ical_url_encrypted = "source-secret";
+  input.source.listings[0].last_sync_at = "2026-07-01T00:00:00.000Z";
+  input.source.listings[0].last_sync_status = "success";
+
+  const plan = buildConsolidationPlan({ ...input, manualIcalReattach: true });
+
+  assert.equal(plan.listings[0].inbound_ical_url_encrypted, null);
+  assert.equal(plan.listings[0].last_sync_at, null);
+  assert.equal(plan.listings[0].last_sync_status, null);
+  assert.equal(plan.externalCalendarEvents[0].id, "historical-event");
+  assert.equal(plan.externalCalendarEvents[0].historical, true);
+  assert.equal(plan.counts.disconnectedListings, 1);
+  assert.doesNotMatch(JSON.stringify(plan), /source-secret/);
+});
+
+test("manual iCal mode matches listings by normalized name without plaintext feed comparison", () => {
+  const input = fixture();
+  input.source.listings[0].inbound_ical_url_plaintext = "https://old.example/source.ics";
+  input.destination.listings[0].inbound_ical_url_plaintext = "https://new.example/destination.ics";
+  assert.throws(() => buildConsolidationPlan(input), /LISTING_IDENTITY_CONFLICT/);
+  assert.doesNotThrow(() => buildConsolidationPlan({ ...input, manualIcalReattach: true }));
+});
+
 test("refuses duplicate source property identities", () => {
   const input = fixture();
   input.source.properties.push({ id: "duplicate", name: "Emeraude 603", active: true, archived_at: null });
