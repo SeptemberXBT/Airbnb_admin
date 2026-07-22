@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   APPLY_CONFIRMATION,
@@ -55,4 +56,16 @@ test("key-based mode requires both keys while manual mode does not depend on the
 test("database fingerprints must differ even when URLs are different", () => {
   assert.doesNotThrow(() => assertDistinctFingerprints({ identity: "old" }, { identity: "new" }));
   assert.throws(() => assertDistinctFingerprints({ identity: "same" }, { identity: "same" }), /DATABASE_FINGERPRINTS_MUST_DIFFER/);
+});
+
+test("manual orchestration never decrypts listing ciphertext and verifies disconnected rows", async () => {
+  const [runner, database, apply] = await Promise.all([
+    readFile(new URL("../consolidate-admin-data.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./database.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./apply.mjs", import.meta.url), "utf8"),
+  ]);
+  assert.match(runner, /manualIcalReattach \? sourceRaw : prepareListings/);
+  assert.match(runner, /manualIcalReattach \? destinationRaw : inspectDestinationListings/);
+  assert.match(database, /is_nullable[\s\S]*MANUAL_ICAL_DESTINATION_SCHEMA_REQUIRED/i);
+  assert.match(apply, /POSTCONDITION_CONNECTED_ICAL_IN_MANUAL_MODE/i);
 });

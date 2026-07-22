@@ -46,6 +46,17 @@ export async function databaseFingerprint(sql, databaseUrl) {
   };
 }
 
+export async function assertManualIcalDestinationSchema(sql) {
+  const [column] = await sql`
+    select is_nullable from information_schema.columns
+    where table_schema = 'public' and table_name = 'listings'
+      and column_name = 'inbound_ical_url_encrypted'
+  `;
+  if (column?.is_nullable !== "YES") {
+    throw new Error("MANUAL_ICAL_DESTINATION_SCHEMA_REQUIRED");
+  }
+}
+
 async function requireTables(sql, tables, label) {
   const found = await sql`
     select table_name from information_schema.tables

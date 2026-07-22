@@ -7,6 +7,7 @@ import { applyConsolidation } from "./admin-data-consolidation/apply.mjs";
 import {
   DESTINATION_TABLES,
   SOURCE_OPERATIONAL_TABLES,
+  assertManualIcalDestinationSchema,
   exportDatabase,
   snapshotCounts,
 } from "./admin-data-consolidation/database.mjs";
@@ -82,12 +83,12 @@ function migrationActor(destination, requestedEmail) {
 }
 
 async function main() {
-  const { apply, envFile } = parseMigrationArgs(process.argv.slice(2));
+  const { apply, envFile, manualIcalReattach } = parseMigrationArgs(process.argv.slice(2));
   const envPath = path.resolve(process.cwd(), envFile);
   const config = validateMigrationConfig({
     ...process.env,
     ...parseEnvFile(await readFile(envPath, "utf8")),
-  });
+  }, { manualIcalReattach });
   const sourceSql = databaseClient(config.OLD_DATABASE_URL);
   const destinationSql = databaseClient(config.NEW_DATABASE_URL);
 
@@ -98,6 +99,7 @@ async function main() {
     ]);
     assertDistinctFingerprints(sourceRaw.fingerprint, destinationRaw.fingerprint);
     if (!sourceRaw.properties.length) throw new Error("SOURCE_HAS_NO_PROPERTIES");
+    if (manualIcalReattach) await assertManualIcalDestinationSchema(destinationSql);
 
     const backupDirectory = await mkdtemp(path.join(os.tmpdir(), "noirhaus-admin-consolidation-"));
     const [sourceBackup, destinationBackup] = await Promise.all([
@@ -105,14 +107,27 @@ async function main() {
       writeEncryptedSnapshot(backupDirectory, "destination.snapshot.enc", destinationRaw, config.MIGRATION_BACKUP_PASSPHRASE),
     ]);
 
-    const source = prepareListings(sourceRaw, config.OLD_ICAL_ENCRYPTION_KEY, config.NEW_ICAL_ENCRYPTION_KEY);
-    const destination = inspectDestinationListings(destinationRaw, config.NEW_ICAL_ENCRYPTION_KEY);
+    const source = manualIcalReattach ? sourceRaw : prepareListings(
+      sourceRaw,
+      config.OLD_ICAL_ENCRYPTION_KEY,
+      config.NEW_ICAL_ENCRYPTION_KEY,
+    );
+    const destination = manualIcalReattach ? destinationRaw : inspectDestinationListings(
+      destinationRaw,
+      config.NEW_ICAL_ENCRYPTION_KEY,
+    );
     const actor = migrationActor(destination, config.MIGRATION_ACTOR_EMAIL);
-    const plan = buildConsolidationPlan({ source, destination, fallbackActorId: actor.id });
+    const plan = buildConsolidationPlan({
+      source,
+      destination,
+      fallbackActorId: actor.id,
+      manualIcalReattach,
+    });
     plan.fallbackActorId = actor.id;
 
     const report = {
       mode: apply ? "apply" : "dry-run",
+      icalMode: manualIcalReattach ? "manual-reattach" : "re-encrypt",
       sourceFingerprint: sourceRaw.fingerprint.identity.slice(0, 12),
       destinationFingerprint: destinationRaw.fingerprint.identity.slice(0, 12),
       sourceCounts: snapshotCounts(sourceRaw, SOURCE_OPERATIONAL_TABLES),
@@ -120,6 +135,7 @@ async function main() {
       plannedCounts: plan.counts,
       propertyMatches: Object.keys(plan.propertyMap).length,
       listingMatches: Object.keys(plan.listingMap).length,
+      disconnectedListings: plan.counts.disconnectedListings,
       backups: [sourceBackup, destinationBackup],
     };
     console.log(JSON.stringify(report, null, 2));
@@ -129,9 +145,16 @@ async function main() {
       return;
     }
 
-    const result = await applyConsolidation(destinationSql, plan, destinationRaw);
-    for (const listing of await destinationSql`select inbound_ical_url_encrypted from public.listings`) {
-      openIcalUrl(listing.inbound_ical_url_encrypted, config.NEW_ICAL_ENCRYPTION_KEY);
+    const result = await applyConsolidation(
+      destinationSql,
+      plan,
+      destinationRaw,
+      { manualIcalReattach },
+    );
+    if (!manualIcalReattach) {
+      for (const listing of await destinationSql`select inbound_ical_url_encrypted from public.listings`) {
+        openIcalUrl(listing.inbound_ical_url_encrypted, config.NEW_ICAL_ENCRYPTION_KEY);
+      }
     }
     const sourceAfter = await exportDatabase(
       sourceSql,

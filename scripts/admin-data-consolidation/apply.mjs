@@ -50,7 +50,7 @@ async function assertSnapshotStillCurrent(tx, destinationSnapshot) {
   }
 }
 
-async function assertPostconditions(tx, plan, preservedBookingCount) {
+async function assertPostconditions(tx, plan, preservedBookingCount, manualIcalReattach) {
   const expected = {
     properties: plan.counts.properties,
     listings: plan.counts.listings,
@@ -76,9 +76,21 @@ async function assertPostconditions(tx, plan, preservedBookingCount) {
     where p.id is null limit 1
   `;
   if (orphanBooking) throw new Error("POSTCONDITION_ORPHAN_BOOKING");
+  if (manualIcalReattach) {
+    const [connected] = await tx`
+      select id from public.listings
+      where inbound_ical_url_encrypted is not null limit 1
+    `;
+    if (connected) throw new Error("POSTCONDITION_CONNECTED_ICAL_IN_MANUAL_MODE");
+  }
 }
 
-export async function applyConsolidation(sql, plan, destinationSnapshot) {
+export async function applyConsolidation(
+  sql,
+  plan,
+  destinationSnapshot,
+  { manualIcalReattach = false } = {},
+) {
   const now = new Date();
   return sql.begin(async (tx) => {
     await tx.unsafe(`lock table
@@ -144,7 +156,12 @@ export async function applyConsolidation(sql, plan, destinationSnapshot) {
         ${tx.json({ counts: plan.counts })})
     `;
 
-    await assertPostconditions(tx, plan, destinationSnapshot.bookings.length);
+    await assertPostconditions(
+      tx,
+      plan,
+      destinationSnapshot.bookings.length,
+      manualIcalReattach,
+    );
     return { applied: true, counts: plan.counts };
   });
 }
