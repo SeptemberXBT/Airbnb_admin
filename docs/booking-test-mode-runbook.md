@@ -58,6 +58,7 @@ RAZORPAY_WEBHOOK_SECRET
 ZEPTOMAIL_TOKEN
 ZEPTOMAIL_SENDER_ADDRESS
 ZEPTOMAIL_SENDER_NAME
+GUEST_SUPPORT_EMAIL
 ADMIN_NOTIFICATION_EMAIL
 BOOKING_CRON_SECRET
 INVENTORY_LEDGER_MODE
@@ -198,7 +199,9 @@ the Razorpay API every minute and remain `pending` on ambiguous provider errors.
 3. Associate the verified domain and intended sender address with the Agent.
 4. Generate a send-mail token and store it only as `ZEPTOMAIL_TOKEN` on admin.
 5. Set `ZEPTOMAIL_SENDER_ADDRESS` to that enabled sender and
-   `ADMIN_NOTIFICATION_EMAIL` to the Preview test recipient.
+   `ADMIN_NOTIFICATION_EMAIL` to the Preview test recipient. Optionally set
+   `GUEST_SUPPORT_EMAIL`; it defaults to `hello@noirhaus.in` and must use a
+   domain verified in the same Agent. Guest replies route to this address.
 6. Send a test through the durable outbox and verify guest plus admin delivery,
    DKIM alignment, links, and that no secret or internal identifier is exposed.
 

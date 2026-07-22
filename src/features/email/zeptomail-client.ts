@@ -11,6 +11,7 @@ export function createZeptoMailClient(options: {
   token: string;
   senderAddress: string;
   senderName: string;
+  replyToAddress: string;
   fetchImpl?: typeof fetch;
   endpoint?: string;
 }) {
@@ -28,6 +29,7 @@ export function createZeptoMailClient(options: {
           body: JSON.stringify({
             from: { address: options.senderAddress, name: options.senderName },
             to: [{ email_address: { address: message.to } }],
+            reply_to: [{ address: options.replyToAddress, name: options.senderName }],
             subject: message.subject,
             htmlbody: message.htmlBody,
             textbody: message.textBody,

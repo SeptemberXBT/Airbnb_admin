@@ -10,6 +10,7 @@ import { createRazorpayClient } from "@/features/payments/razorpay-client";
 import { createRazorpayRefundProvider, createRefundService } from "@/features/payments/refund-service";
 import { createZeptoMailClient } from "@/features/email/zeptomail-client";
 import { createNotificationOutboxService } from "@/features/email/outbox-service";
+import { resolveGuestSupportEmail } from "@/features/email/email-config";
 import { processOrderRecoveryJobs } from "@/features/payments/order-recovery";
 
 type StageContext = { now: Date; limit: number };
@@ -179,6 +180,7 @@ export function createConfiguredBookingJobRunner() {
       token: requiredWorkerEnvironment("ZEPTOMAIL_TOKEN"),
       senderAddress: requiredWorkerEnvironment("ZEPTOMAIL_SENDER_ADDRESS"),
       senderName: process.env.ZEPTOMAIL_SENDER_NAME?.trim() || "Noir Haus",
+      replyToAddress: resolveGuestSupportEmail(),
     }),
   });
   const attempts = createAttemptService(sql);
