@@ -15,4 +15,13 @@ describe("calendar sync history persistence", () => {
     expect(source).toMatch(/withPropertyInventory\(propertyId/i);
     expect(source).toMatch(/reconcilePropertyNights\(/i);
   });
+
+  it("excludes disconnected listings from both manual and scheduled sync", async () => {
+    const source = await readFile(path.join(process.cwd(), "src/features/sync/sync-service.ts"), "utf8");
+    const connectedFilters = source.match(/inbound_ical_url_encrypted is not null/gi) ?? [];
+
+    expect(connectedFilters).toHaveLength(2);
+    expect(source).toMatch(/where l\.active and l\.archived_at is null[\s\S]*l\.inbound_ical_url_encrypted is not null/i);
+    expect(source).toMatch(/where active and archived_at is null[\s\S]*inbound_ical_url_encrypted is not null/i);
+  });
 });

@@ -277,14 +277,16 @@ async function getListings(source: SyncSource, userId?: string) {
   if (source === "manual") {
     return sql<SyncListing[]>`
       select l.id, l.inbound_ical_url_encrypted as encrypted_url from public.listings l
-      where l.active and l.archived_at is null and exists (
+      where l.active and l.archived_at is null
+        and l.inbound_ical_url_encrypted is not null and exists (
         select 1 from public.property_members pm where pm.property_id = l.property_id and pm.user_id = ${userId ?? ""}
       ) order by l.id
     `;
   }
   return sql<SyncListing[]>`
     select id, inbound_ical_url_encrypted as encrypted_url from public.listings
-    where active and archived_at is null order by id
+    where active and archived_at is null
+      and inbound_ical_url_encrypted is not null order by id
   `;
 }
 
