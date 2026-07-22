@@ -18,6 +18,7 @@ const property: PropertySummary = {
   listingName: "Garden Suite on Airbnb",
   listingActive: true,
   outboundEnabled: false,
+  inboundIcalConnected: true,
   lastSyncAt: null,
   lastSyncStatus: null,
 };
@@ -85,5 +86,32 @@ describe("PropertyManager mutation feedback", () => {
     await waitFor(() => expect(screen.getByText("Could not save this property. Check every field.")).toBeVisible());
     expect(details).toHaveAttribute("open");
     expect(details.querySelector<HTMLInputElement>('[name="name"]')?.value).toBe("Garden Suite");
+  });
+
+  it("marks an imported listing as requiring iCal and reconnects it through the protected editor", async () => {
+    const disconnected = { ...property, inboundIcalConnected: false };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ properties: [property] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<PropertyManager initialProperties={[disconnected]} demoMode={false} />);
+
+    expect(screen.getByText("iCal required")).toBeVisible();
+    await userEvent.click(screen.getByText("Edit"));
+    const editor = screen.getByText("Edit").closest("details");
+    if (!editor) throw new Error("Missing property editor");
+    fillPropertyForm(editor);
+    const submit = editor.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!submit) throw new Error("Missing property submit button");
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(request.method).toBe("PATCH");
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      propertyId: property.id,
+      listingId: property.listingId,
+      inboundIcalUrl: "https://www.airbnb.com/calendar/ical/123.ics?s=secret",
+    });
   });
 });

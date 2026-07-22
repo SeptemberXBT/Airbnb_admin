@@ -37,6 +37,16 @@ function PropertyFields({ property }: { property?: PropertySummary }) {
   );
 }
 
+function propertyStatus(property: PropertySummary) {
+  if (!property.inboundIcalConnected) {
+    return { className: "status--impossible", label: "iCal required" };
+  }
+  if (property.lastSyncStatus === "failure") {
+    return { className: "status--impossible", label: "Sync error" };
+  }
+  return { className: "status--safe", label: "Active" };
+}
+
 export function PropertyManager({ initialProperties, demoMode }: { initialProperties: PropertySummary[]; demoMode: boolean }) {
   const router = useRouter();
   const [message, setMessage] = useState("");
@@ -123,7 +133,7 @@ export function PropertyManager({ initialProperties, demoMode }: { initialProper
             <div className="property-main"><strong>{property.name}</strong><span>{property.listingName}</span></div>
             <div className="property-default"><span>Checkout</span><strong>{property.defaultCheckoutTime}</strong></div>
             <div className="property-default"><span>Check-in</span><strong>{property.defaultCheckinTime}</strong></div>
-            <span className={`status ${property.lastSyncStatus === "failure" ? "status--impossible" : "status--safe"}`}>{property.lastSyncStatus === "failure" ? "Sync error" : "Active"}</span>
+            <span className={`status ${propertyStatus(property).className}`}>{propertyStatus(property).label}</span>
             <div className="feed-actions"><button className="icon-button" type="button" title="Rotate outbound feed link" aria-label={`Rotate outbound feed for ${property.name}`} disabled={savingKey === `rotate:${property.id}`} onClick={() => rotateFeed(property)}><Link2 size={17} /></button><button className="icon-button" type="button" title={property.outboundEnabled ? "Disable outbound feed" : "Enable outbound feed"} aria-label={`${property.outboundEnabled ? "Disable" : "Enable"} outbound feed for ${property.name}`} disabled={savingKey === `toggle:${property.id}`} onClick={() => toggleFeed(property)}>{property.outboundEnabled ? <PauseCircle size={17} /> : <PlayCircle size={17} />}</button></div>
             <details className="row-editor"><summary className="button button--quiet">Edit</summary><form onSubmit={(event) => submit(event, property)}><PropertyFields property={property} /><div className="form-actions"><button className="button button--primary" disabled={savingKey === `edit:${property.id}`} type="submit">{savingKey === `edit:${property.id}` ? <RefreshCw className="spin" size={16} /> : <Check size={16} />} Save changes</button></div></form></details>
           </article>

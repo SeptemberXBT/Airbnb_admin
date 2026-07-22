@@ -17,6 +17,7 @@ export type PropertySummary = {
   listingName: string;
   listingActive: boolean;
   outboundEnabled: boolean;
+  inboundIcalConnected: boolean;
   lastSyncAt: string | null;
   lastSyncStatus: string | null;
 };
@@ -27,13 +28,14 @@ export async function listPropertiesForUser(userId: string): Promise<PropertySum
   const rows = await sql<{
     id: string; name: string; active: boolean; default_checkin_time: string;
     default_checkout_time: string; default_cleaning_minutes: number; listing_id: string;
-    listing_name: string; listing_active: boolean; outbound_enabled: boolean;
+    listing_name: string; listing_active: boolean; outbound_enabled: boolean; inbound_ical_connected: boolean;
     last_sync_at: string | null; last_sync_status: string | null;
   }[]>`
     select p.id, p.name, p.active, p.default_checkin_time::text,
       p.default_checkout_time::text, p.default_cleaning_minutes,
       l.id as listing_id, l.display_name as listing_name, l.active as listing_active,
-      l.outbound_enabled, l.last_sync_at::text, l.last_sync_status::text
+      l.outbound_enabled, l.inbound_ical_url_encrypted is not null as inbound_ical_connected,
+      l.last_sync_at::text, l.last_sync_status::text
     from public.properties p
     join public.property_members pm on pm.property_id = p.id and pm.user_id = ${userId}
     join public.listings l on l.property_id = p.id and l.archived_at is null
@@ -51,6 +53,7 @@ export async function listPropertiesForUser(userId: string): Promise<PropertySum
     listingName: row.listing_name,
     listingActive: row.listing_active,
     outboundEnabled: row.outbound_enabled,
+    inboundIcalConnected: row.inbound_ical_connected,
     lastSyncAt: row.last_sync_at,
     lastSyncStatus: row.last_sync_status,
   }));
@@ -123,7 +126,9 @@ export async function updateProperty(input: PropertyListingInput & { propertyId:
     `;
     await tx`
       update public.listings set display_name = ${input.displayName},
-        inbound_ical_url_encrypted = ${sealSecret(input.inboundIcalUrl, encryptionKey)}, updated_at = now()
+        inbound_ical_url_encrypted = ${sealSecret(input.inboundIcalUrl, encryptionKey)},
+        last_sync_at = null, last_sync_status = null, last_sync_error_code = null,
+        updated_at = now()
       where id = ${input.listingId} and property_id = ${input.propertyId}
     `;
     await tx`
