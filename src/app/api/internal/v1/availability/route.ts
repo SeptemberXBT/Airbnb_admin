@@ -12,7 +12,10 @@ function errorResponse(error: unknown) {
 }
 
 export async function POST(request: Request) {
-  if (process.env.PUBLIC_BOOKING_ENABLED !== "true") {
+  const availabilityEnabled =
+    process.env.PUBLIC_AVAILABILITY_ENABLED === "true"
+    || process.env.PUBLIC_BOOKING_ENABLED === "true";
+  if (!availabilityEnabled) {
     return NextResponse.json({ error: "booking_disabled" }, { status: 503 });
   }
   try {
