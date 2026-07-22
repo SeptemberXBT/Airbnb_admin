@@ -3,13 +3,13 @@ import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import { getDb } from "@/lib/db/client";
 import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
-import { createRazorpayClient, type RazorpayPayment } from "./razorpay-client";
+import { createRazorpayClient, RazorpayClientError, type RazorpayPayment } from "./razorpay-client";
 import type { ParsedRazorpayWebhook } from "./razorpay-webhook";
 import { enqueueNotification } from "@/features/email/outbox-service";
 import { renderEmailTemplate } from "@/features/email/templates";
 
 type PaymentSql = postgres.Sql;
-type PaymentLookup = { fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
+type PaymentLookup = { publicKeyId: string; fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
 export type ReconciliationTrigger = "client_callback" | "checkout_dismissed" | "hold_expiry" | "webhook" | "worker";
 
 type BookingRow = {
@@ -25,7 +25,9 @@ type BookingRow = {
   amount_paise: number;
   razorpay_order_id: string;
   razorpay_payment_id: string | null;
+  razorpay_key_id: string | null;
   refund_status: string;
+  cancellation_reason: string | null;
 };
 
 export class PaymentReconciliationError extends Error {
@@ -62,7 +64,7 @@ export function createPaymentReconciliationService(
     const [booking] = await sql<BookingRow[]>`
       select id, property_id, public_reference, guest_name, guest_email, guest_phone,
         checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-        razorpay_payment_id, refund_status
+        razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       from public.bookings where public_reference = ${reference}
     `;
     if (!booking) throw new PaymentReconciliationError("BOOKING_NOT_FOUND", 404);
@@ -73,19 +75,19 @@ export function createPaymentReconciliationService(
     const [booking] = await sql<BookingRow[]>`
       select id, property_id, public_reference, guest_name, guest_email, guest_phone,
         checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-        razorpay_payment_id, refund_status
+        razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       from public.bookings where razorpay_order_id = ${orderId}
     `;
     if (!booking) throw new PaymentReconciliationError("BOOKING_NOT_FOUND", 404);
     return booking;
   }
 
-  async function recordRetryableJob(bookingId: string) {
+  async function recordRetryableJob(bookingId: string, errorCode = "provider_unavailable") {
     await sql`
       insert into public.payment_jobs (booking_id, job_kind, idempotency_identity, status, last_error_code)
-      values (${bookingId}, 'payment_reconciliation', ${`reconcile:${bookingId}`}, 'retryable_failure', 'provider_unavailable')
+      values (${bookingId}, 'payment_reconciliation', ${`reconcile:${bookingId}`}, 'retryable_failure', ${errorCode})
       on conflict (idempotency_identity) do update set
-        status = 'retryable_failure', last_error_code = 'provider_unavailable',
+        status = 'retryable_failure', last_error_code = ${errorCode},
         next_attempt_at = now(), updated_at = now()
     `;
   }
@@ -99,10 +101,30 @@ export function createPaymentReconciliationService(
       const [current] = await tx<BookingRow[]>`
         select id, property_id, public_reference, guest_name, guest_email, guest_phone,
           checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-          razorpay_payment_id, refund_status
+          razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         from public.bookings where id = ${booking.id}
       `;
       if (!current) throw new PaymentReconciliationError("BOOKING_NOT_FOUND", 404);
+      const previousKeyId = current.razorpay_key_id;
+      const [accountBound] = await tx<{ razorpay_key_id: string }[]>`
+        update public.bookings set razorpay_key_id = ${dependencies.razorpay.publicKeyId},
+          updated_at = ${clock()}
+        where id = ${current.id}
+        returning razorpay_key_id
+      `;
+      if (!accountBound) throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
+      current.razorpay_key_id = accountBound.razorpay_key_id;
+      if (previousKeyId !== dependencies.razorpay.publicKeyId) {
+        const changes = tx.json({ previousKeyId, currentKeyId: dependencies.razorpay.publicKeyId, source: trigger });
+        await tx`
+          insert into public.booking_events (property_id, booking_id, event_type, metadata)
+          values (${current.property_id}, ${current.id}, 'razorpay_account_rebound', ${changes})
+        `;
+        await tx`
+          insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+          values (${current.property_id}, 'razorpay_account_rebound', 'website_booking', ${current.id}, ${changes})
+        `;
+      }
 
       if (state.kind === "captured") {
         if (state.payment.amount !== current.amount_paise) {
@@ -119,19 +141,23 @@ export function createPaymentReconciliationService(
             insert into public.payment_jobs (
               booking_id, job_kind, idempotency_identity, status, next_attempt_at
             ) values (
-              ${current.id}, 'refund', ${`late-payment:${state.payment.id}`}, 'pending', ${clock()}
-            ) on conflict (idempotency_identity) do nothing returning id
+              ${current.id}, 'refund', ${`refund:${current.id}`}, 'pending', ${clock()}
+            ) on conflict (booking_id) where job_kind = 'refund' do nothing returning id
           `;
           await tx`
             update public.bookings set razorpay_payment_id = coalesce(razorpay_payment_id, ${state.payment.id}),
-              refund_status = 'pending', updated_at = ${clock()}
+              refund_status = case when refund_status = 'not_required' then 'pending' else refund_status end,
+              updated_at = ${clock()}
             where id = ${current.id}
           `;
           if (job) await tx`
             insert into public.booking_events (property_id, booking_id, event_type, metadata)
             values (${current.property_id}, ${current.id}, 'late_payment_after_expiry', ${tx.json({ paymentId: state.payment.id })})
           `;
-          return { status: current.status, refundStatus: "pending" };
+          return {
+            status: current.status,
+            refundStatus: current.refund_status === "not_required" ? "pending" : current.refund_status,
+          };
         }
 
         const [confirmed] = await tx<BookingRow[]>`
@@ -141,13 +167,14 @@ export function createPaymentReconciliationService(
           where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
           returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
             checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-            razorpay_payment_id, refund_status
+            razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         `;
         if (!confirmed) {
           const [latest] = await tx<BookingRow[]>`
             select id, property_id, public_reference, guest_name, guest_email, guest_phone,
               checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-              razorpay_payment_id, refund_status from public.bookings where id = ${current.id}
+              razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
+            from public.bookings where id = ${current.id}
           `;
           return publicState(latest);
         }
@@ -212,7 +239,7 @@ export function createPaymentReconciliationService(
           where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
           returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
             checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-            razorpay_payment_id, refund_status
+            razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         `;
         return publicState(pending ?? current);
       }
@@ -226,7 +253,7 @@ export function createPaymentReconciliationService(
         where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
         returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
           checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
-          razorpay_payment_id, refund_status
+          razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       `;
       if (releasedBooking) {
         await releaseSourceNights(tx, "website_hold", current.id, state.kind === "failed" ? "payment_failed" : "hold_expired");
@@ -245,8 +272,10 @@ export function createPaymentReconciliationService(
       let payments: RazorpayPayment[];
       try {
         payments = await dependencies.razorpay.fetchOrderPayments(booking.razorpay_order_id);
-      } catch {
-        await recordRetryableJob(booking.id);
+      } catch (error) {
+        await recordRetryableJob(booking.id, error instanceof RazorpayClientError && error.kind === "definitive"
+          ? "razorpay_account_mismatch"
+          : "provider_unavailable");
         throw new PaymentReconciliationError("PAYMENT_RECONCILIATION_RETRYABLE");
       }
       return applyState(booking, choosePaymentState(payments), trigger);
@@ -254,6 +283,17 @@ export function createPaymentReconciliationService(
 
     async applyVerifiedPayment(orderId: string, payment: RazorpayPayment, trigger: ReconciliationTrigger = "webhook") {
       const booking = await bookingByOrder(orderId);
+      if (booking.razorpay_key_id !== dependencies.razorpay.publicKeyId) {
+        let payments: RazorpayPayment[];
+        try {
+          payments = await dependencies.razorpay.fetchOrderPayments(orderId);
+        } catch {
+          throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
+        }
+        if (!payments.some((candidate) => candidate.id === payment.id && candidate.amount === payment.amount)) {
+          throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
+        }
+      }
       return applyState(booking, choosePaymentState([payment]), trigger);
     },
 

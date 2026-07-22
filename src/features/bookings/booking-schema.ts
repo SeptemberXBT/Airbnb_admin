@@ -50,13 +50,27 @@ export function createAvailabilityRequestSchema(todayDate = currentIndiaStayDate
 export function createBookingRequestSchema(todayDate = currentIndiaStayDate()) {
   return validateStay({
     ...stayFields,
-    guestName: z.string().trim().min(2).max(120),
+    guestName: z.string().trim().min(2).max(120).optional(),
+    firstName: z.string().trim().min(1).max(80).optional(),
+    lastName: z.string().trim().min(1).max(80).optional(),
+    fullGuestName: z.string().trim().min(2).max(120).optional(),
     guestEmail: z.email().max(254),
     guestPhone: z.string().trim().min(7).max(32).regex(/^[+()\-\s0-9]+$/),
-  }, todayDate);
+    countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).default("IN"),
+    notes: z.string().trim().max(2000).optional(),
+  }, todayDate).superRefine((value, context) => {
+    if (value.guestName) return;
+    if (!value.firstName) {
+      context.addIssue({ code: "custom", message: "First name is required", path: ["firstName"] });
+    }
+    if (!value.lastName) {
+      context.addIssue({ code: "custom", message: "Last name is required", path: ["lastName"] });
+    }
+  });
 }
 
 export const availabilityRequestSchema = createAvailabilityRequestSchema();
 export const bookingRequestSchema = createBookingRequestSchema();
 export type AvailabilityRequest = z.infer<ReturnType<typeof createAvailabilityRequestSchema>>;
-export type CreateBookingRequest = z.infer<ReturnType<typeof createBookingRequestSchema>>;
+export type CreateBookingRequest = z.input<ReturnType<typeof createBookingRequestSchema>>;
+export type ValidatedCreateBookingRequest = z.output<ReturnType<typeof createBookingRequestSchema>>;

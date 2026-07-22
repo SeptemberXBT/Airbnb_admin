@@ -20,6 +20,40 @@ describe("public booking schemas", () => {
     })).toMatchObject({ guestName: "Noir Guest" });
   });
 
+  it("accepts the premium checkout fields and defaults the country to India", () => {
+    expect(createBookingRequestSchema(today).parse({
+      ...stay,
+      firstName: "Riya",
+      lastName: "Sharma",
+      fullGuestName: "Riya Sharma",
+      guestEmail: "riya@example.test",
+      guestPhone: "+91 99999 99999",
+      notes: "Late arrival, if possible.",
+    })).toMatchObject({
+      firstName: "Riya",
+      lastName: "Sharma",
+      fullGuestName: "Riya Sharma",
+      countryCode: "IN",
+      notes: "Late arrival, if possible.",
+    });
+  });
+
+  it("requires first and last name for the premium checkout but keeps legacy guestName compatible", () => {
+    const schema = createBookingRequestSchema(today);
+    expect(schema.safeParse({
+      ...stay,
+      firstName: "Riya",
+      guestEmail: "riya@example.test",
+      guestPhone: "+919999999999",
+    }).success).toBe(false);
+    expect(schema.safeParse({
+      ...stay,
+      guestName: "Legacy Guest",
+      guestEmail: "legacy@example.test",
+      guestPhone: "+919999999999",
+    }).success).toBe(true);
+  });
+
   it.each(["amount", "price", "pricePaise", "currency", "discount", "tax", "fee"])(
     "rejects client-supplied %s",
     (field) => {

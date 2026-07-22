@@ -10,7 +10,7 @@ let propertyId: string;
 let listingId: string;
 
 function fakeRazorpay(payments: RazorpayPayment[]) {
-  return { fetchOrderPayments: vi.fn(async () => payments) };
+  return { publicKeyId: "rzp_test_reconciliation", fetchOrderPayments: vi.fn(async () => payments) };
 }
 
 async function addHeldBooking(status = "held", expiresAt = new Date("2026-07-21T10:10:00.000Z")) {
@@ -139,7 +139,7 @@ describe("payment reconciliation", () => {
 
   it("retains the hold on provider ambiguity", async () => {
     const booking = await addHeldBooking();
-    const razorpay = { fetchOrderPayments: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }) };
+    const razorpay = { publicKeyId: "rzp_test_reconciliation", fetchOrderPayments: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }) };
     const service = createPaymentReconciliationService(testSql, { razorpay, clock: () => NOW });
     await expect(service.reconcileBooking(booking.public_reference, "hold_expiry")).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_RETRYABLE" });
     expect(await bookingState(booking.id)).toMatchObject({ status: "held" });
@@ -173,6 +173,6 @@ describe("payment reconciliation", () => {
     expect(await bookingState(late.id)).toMatchObject({ status: "expired", refund_status: "pending" });
     expect(await activeKinds()).toEqual([{ source_kind: "manual_local" }, { source_kind: "manual_local" }]);
     const jobs = await testSql<{ idempotency_identity: string }[]>`select idempotency_identity from public.payment_jobs`;
-    expect(jobs).toEqual([{ idempotency_identity: "late-payment:pay_late" }]);
+    expect(jobs).toEqual([{ idempotency_identity: `refund:${late.id}` }]);
   });
 });

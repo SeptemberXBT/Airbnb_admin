@@ -76,10 +76,10 @@ describe("authoritative website booking holds", () => {
       kind: "created", amountPaise: 1_950_000, currency: "INR", razorpayKeyId: "rzp_test_public",
     });
     expect(result.holdExpiresAt).toBe("2026-07-21T10:10:00.000Z");
-    const [booking] = await testSql<{ status: string; amount_paise: number; hold_expires_at: string }[]>`
-      select status, amount_paise, hold_expires_at::text from public.bookings
+    const [booking] = await testSql<{ status: string; amount_paise: number; hold_expires_at: string; razorpay_key_id: string }[]>`
+      select status, amount_paise, hold_expires_at::text, razorpay_key_id from public.bookings
     `;
-    expect(booking).toMatchObject({ status: "held", amount_paise: 1_950_000 });
+    expect(booking).toMatchObject({ status: "held", amount_paise: 1_950_000, razorpay_key_id: "rzp_test_public" });
     const snapshots = await testSql<{ stay_date: string; price_paise: number; price_source: string }[]>`
       select stay_date::text, price_paise, price_source from public.booking_night_prices order by stay_date
     `;
@@ -92,12 +92,50 @@ describe("authoritative website booking holds", () => {
     await expect(service.getPublicBookingStatus(result.bookingReference)).resolves.toEqual({
       status: "processing",
       refundStatus: "not_required",
+      bookingReference: result.bookingReference,
+      propertyName: "Shade of Love",
+      checkin: "2026-08-14",
+      checkout: "2026-08-17",
+      guestCount: 2,
+      amountPaise: 1_950_000,
+      currency: "INR",
     });
 
     await testSql`update public.property_rates set weekday_price_paise = 999999, weekend_price_paise = 999999 where property_id = ${propertyId}`;
     expect(await testSql`select price_paise from public.booking_night_prices order by stay_date`).toEqual([
       { price_paise: 700000 }, { price_paise: 750000 }, { price_paise: 500000 },
     ]);
+  });
+
+  it("stores the premium checkout identity, country, and special requests", async () => {
+    const service = createBookingService(testSql, { razorpay: fakeRazorpay(), clock: () => NOW });
+    await service.createBooking({
+      ...request,
+      guestName: undefined,
+      firstName: "Riya",
+      lastName: "Sharma",
+      fullGuestName: "Riya S. Sharma",
+      countryCode: "IN",
+      notes: "Late arrival, if possible.",
+    }, randomUUID());
+
+    const [booking] = await testSql<{
+      guest_name: string;
+      booker_first_name: string;
+      booker_last_name: string;
+      country_code: string;
+      special_requests: string;
+    }[]>`
+      select guest_name, booker_first_name, booker_last_name, country_code, special_requests
+      from public.bookings
+    `;
+    expect(booking).toEqual({
+      guest_name: "Riya S. Sharma",
+      booker_first_name: "Riya",
+      booker_last_name: "Sharma",
+      country_code: "IN",
+      special_requests: "Late arrival, if possible.",
+    });
   });
 
   it("serializes simultaneous attempts so only one hold and one Razorpay order wins", async () => {

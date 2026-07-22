@@ -121,4 +121,47 @@ describe("initial database migration", () => {
     expect(down).toMatch(/drop index if exists public\.inventory_nights_one_active_owner/i);
     expect(down).toMatch(/alter column created_by set not null/i);
   });
+
+  it("adds premium checkout identity fields and reversible booking archives", async () => {
+    const [up, down] = await Promise.all([
+      readFile(path.join(process.cwd(), "supabase/migrations/0008_premium_booking_checkout.sql"), "utf8"),
+      readFile(path.join(process.cwd(), "supabase/migrations/0008_premium_booking_checkout.down.sql"), "utf8"),
+    ]);
+
+    for (const column of [
+      "booker_first_name",
+      "booker_last_name",
+      "country_code",
+      "special_requests",
+      "razorpay_key_id",
+      "archived_at",
+      "archived_by",
+    ]) {
+      expect(up).toMatch(new RegExp(`add column ${column}`, "i"));
+      expect(down).toMatch(new RegExp(`drop column if exists ${column}`, "i"));
+    }
+    expect(up).toMatch(/archived_by uuid references auth\.users\(id\)/i);
+    expect(up).toMatch(/country_code[\s\S]*\^\[A-Z\]\{2\}\$/i);
+    expect(up).toMatch(/razorpay_key_id[\s\S]*rzp_\(test\|live\)_/i);
+    expect(up).toMatch(/create table public\.payment_refund_job_aliases/i);
+    expect(up).toMatch(/alter table public\.payment_refund_job_aliases enable row level security/i);
+    expect(up).toMatch(/revoke all on public\.payment_refund_job_aliases from authenticated/i);
+    expect(up).toMatch(/row_number\(\)[\s\S]*partition by booking_id/i);
+    expect(up).toMatch(/provider_id is not null/i);
+    expect(up).toMatch(/insert into public\.payment_refund_job_aliases/i);
+    expect(up).not.toMatch(/update public\.payment_jobs[\s\S]*set idempotency_identity = 'refund:'/i);
+    expect(up).toMatch(/create unique index payment_jobs_one_refund_per_booking[\s\S]*where job_kind = 'refund'/i);
+    expect(down).toMatch(/drop table if exists public\.payment_refund_job_aliases/i);
+  });
+
+  it("defines the one-minute Supabase booking worker without committing secrets", async () => {
+    const up = await readFile(path.join(process.cwd(), "ops/setup-supabase-booking-worker.sql"), "utf8");
+    expect(up).toMatch(/create extension if not exists pg_cron/i);
+    expect(up).toMatch(/create extension if not exists pg_net/i);
+    expect(up).toMatch(/vault\.decrypted_secrets/i);
+    expect(up).toMatch(/noir_booking_worker_url/i);
+    expect(up).toMatch(/noir_booking_cron_secret/i);
+    expect(up).toMatch(/'\* \* \* \* \*'/i);
+    expect(up).not.toMatch(/noirhausadmin-booking-preview\.vercel\.app/i);
+  });
 });

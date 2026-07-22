@@ -3,14 +3,17 @@ import { z } from "zod";
 import { listBookingsForUser } from "@/features/bookings/admin-booking-service";
 import { requireUser } from "@/lib/auth/require-user";
 
-const querySchema = z.object({ search: z.string().trim().max(200).optional() }).strict();
+const querySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  view: z.enum(["active", "archived", "all"]).default("active"),
+}).strict();
 
 export async function GET(request: Request) {
   try {
     const user = await requireUser();
     const query = querySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
     return NextResponse.json(
-      { bookings: await listBookingsForUser(user.id, query.search) },
+      { bookings: await listBookingsForUser(user.id, query.search, query.view) },
       { headers: { "cache-control": "private, no-store" } },
     );
   } catch (error) {

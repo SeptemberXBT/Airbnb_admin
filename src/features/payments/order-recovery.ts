@@ -20,12 +20,14 @@ type RecoveryRow = {
   currency: "INR";
   hold_expires_at: Date | string;
   razorpay_order_id: string | null;
+  razorpay_key_id: string | null;
 };
 
 type CurrentRecoveryState = {
   status: string;
   hold_expires_at: Date | string;
   razorpay_order_id: string | null;
+  razorpay_key_id: string | null;
   has_active_hold: boolean;
 };
 
@@ -77,7 +79,7 @@ async function markRecoveryDefinitive(
 
 async function currentRecoveryState(tx: InventoryTransaction, row: RecoveryRow) {
   const [state] = await tx<CurrentRecoveryState[]>`
-    select b.status, b.hold_expires_at, b.razorpay_order_id,
+    select b.status, b.hold_expires_at, b.razorpay_order_id, b.razorpay_key_id,
       exists (
         select 1 from public.inventory_nights i
         where i.booking_id = b.id and i.property_id = b.property_id
@@ -135,7 +137,8 @@ async function finishRecoveredOrder(
     if (state!.razorpay_order_id && state!.razorpay_order_id !== orderId) throw new Error("ORDER_ID_CONFLICT");
     const response = checkoutResponse(row, orderId, publicKeyId);
     const [saved] = await tx<{ razorpay_order_id: string }[]>`
-      update public.bookings set razorpay_order_id = coalesce(razorpay_order_id, ${orderId}), updated_at = ${now}
+      update public.bookings set razorpay_order_id = coalesce(razorpay_order_id, ${orderId}),
+        razorpay_key_id = ${publicKeyId}, updated_at = ${now}
       where id = ${row.booking_id} and status in ('processing', 'held')
         and hold_expires_at > ${now}
         and (razorpay_order_id is null or razorpay_order_id = ${orderId})
@@ -146,6 +149,17 @@ async function finishRecoveredOrder(
       returning razorpay_order_id
     `;
     if (!saved || saved.razorpay_order_id !== orderId) throw new Error("ORDER_RECOVERY_STATE_CHANGED");
+    if (state!.razorpay_key_id !== publicKeyId) {
+      const changes = tx.json({ previousKeyId: state!.razorpay_key_id, currentKeyId: publicKeyId, source: "order_recovery" });
+      await tx`
+        insert into public.booking_events (property_id, booking_id, event_type, metadata)
+        values (${row.property_id}, ${row.booking_id}, 'razorpay_account_rebound', ${changes})
+      `;
+      await tx`
+        insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+        values (${row.property_id}, 'razorpay_account_rebound', 'website_booking', ${row.booking_id}, ${changes})
+      `;
+    }
     const [job] = await tx<{ id: string }[]>`
       update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
         terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
@@ -229,7 +243,7 @@ export async function processOrderRecoveryJobs(
     where j.id = ready.id and b.id = j.booking_id
     returning j.id as job_id, j.attempt_count, b.id as booking_id, b.property_id,
       b.public_reference, b.amount_paise, b.currency, b.hold_expires_at,
-      b.razorpay_order_id
+      b.razorpay_order_id, b.razorpay_key_id
   `;
   let processed = 0;
   let failed = 0;
@@ -240,6 +254,12 @@ export async function processOrderRecoveryJobs(
         continue;
       }
       if (row.razorpay_order_id) {
+        if (row.razorpay_key_id !== provider.publicKeyId) {
+          const recovered = await provider.findOrderByReceipt(orderReceipt(row.public_reference));
+          if (!recovered || validateOrder(recovered, row).id !== row.razorpay_order_id) {
+            throw new Error("RAZORPAY_ACCOUNT_MISMATCH");
+          }
+        }
         await finishRecoveredOrder(sql, row, leaseToken, row.razorpay_order_id, provider.publicKeyId, now);
         processed += 1;
         continue;

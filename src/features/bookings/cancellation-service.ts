@@ -59,8 +59,8 @@ export async function cancelWebsiteBookingForAirbnbCollision(
     if (refundRequired) await tx`
       insert into public.payment_jobs (
         booking_id, job_kind, idempotency_identity, status, next_attempt_at
-      ) values (${booking.id}, 'refund', ${`collision-refund:${booking.id}`}, 'pending', now())
-      on conflict (idempotency_identity) do nothing
+      ) values (${booking.id}, 'refund', ${`refund:${booking.id}`}, 'pending', now())
+      on conflict (booking_id) where job_kind = 'refund' do nothing
     `;
     await tx`
       insert into public.booking_events (property_id, booking_id, event_type, metadata)

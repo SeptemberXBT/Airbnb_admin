@@ -3,11 +3,14 @@ import { resetDb, testSql } from "@/test/db-test-client";
 import { claimStayNights, createInventoryService } from "@/features/inventory/inventory-service";
 import { createSyncReconciliationService } from "@/features/sync/sync-service";
 import { cancelWebsiteBookingForAirbnbCollision } from "./cancellation-service";
+import { createPaymentReconciliationService } from "@/features/payments/payment-reconciliation";
+import { createRefundService } from "@/features/payments/refund-service";
 
 const ACTOR_ID = "10000000-0000-4000-8000-000000000001";
 let propertyId: string;
 let listingId: string;
 let bookingSequence = 0;
+const RAZORPAY_KEY_ID = "rzp_test_collision";
 
 async function addBooking(confirmed: boolean) {
   bookingSequence += 1;
@@ -15,12 +18,13 @@ async function addBooking(confirmed: boolean) {
     insert into public.bookings (
       public_reference, property_id, guest_name, guest_email, guest_phone, guest_count,
       checkin, checkout, status, hold_expires_at, amount_paise, razorpay_order_id, razorpay_payment_id,
-      confirmed_at
+      razorpay_key_id, confirmed_at
     ) values (
       ${`NH-COLLISION${String(bookingSequence).padStart(3, "0")}`}, ${propertyId}, 'Collision Guest',
       'collision@example.test', '+919999999999', 2, '2026-08-14', '2026-08-16',
       ${confirmed ? "confirmed" : "held"}, '2099-01-01', 1200000, ${`order_collision_${bookingSequence}`},
-      ${confirmed ? `pay_collision_${bookingSequence}` : null}, ${confirmed ? new Date("2026-07-21T10:00:00Z") : null}
+      ${confirmed ? `pay_collision_${bookingSequence}` : null}, ${RAZORPAY_KEY_ID},
+      ${confirmed ? new Date("2026-07-21T10:00:00Z") : null}
     ) returning id
   `;
   await createInventoryService(testSql).withPropertyInventory(propertyId, async (tx) => {
@@ -84,7 +88,26 @@ describe("Airbnb-wins collision cancellation", () => {
     expect(owners).toEqual([{ source_kind: "airbnb_reservation" }, { source_kind: "airbnb_reservation" }]);
     const [entry] = await testSql<{ active: boolean }[]>`select active from public.local_calendar_entries where booking_id = ${bookingId}`;
     expect(entry.active).toBe(false);
-    expect(await testSql`select id from public.payment_jobs where booking_id = ${bookingId} and job_kind = 'refund'`).toHaveLength(1);
+    const reconciliation = createPaymentReconciliationService(testSql, {
+      razorpay: {
+        publicKeyId: RAZORPAY_KEY_ID,
+        fetchOrderPayments: async () => [{ id: "pay_collision_1", status: "captured", amount: 1200000 }],
+      },
+    });
+    await reconciliation.applyVerifiedPayment("order_collision_1", { id: "pay_collision_1", status: "captured", amount: 1200000 });
+    const jobs = await testSql<{ idempotency_identity: string }[]>`
+      select idempotency_identity from public.payment_jobs where booking_id = ${bookingId} and job_kind = 'refund'
+    `;
+    expect(jobs).toEqual([{ idempotency_identity: `refund:${bookingId}` }]);
+    const provider = {
+      publicKeyId: RAZORPAY_KEY_ID,
+      fetchOrderPayments: vi.fn(async () => [{ id: "pay_collision_1", status: "captured", amount: 1200000 }]),
+      findRefund: vi.fn(async () => null),
+      createFullRefund: vi.fn(async () => ({ id: "rfnd_collision_1", status: "processed" as const })),
+    };
+    await createRefundService(testSql, { provider }).processBatch(10);
+    await createRefundService(testSql, { provider }).processBatch(10);
+    expect(provider.createFullRefund).toHaveBeenCalledOnce();
     expect(await testSql`select id from public.notification_outbox where booking_id = ${bookingId}`).toHaveLength(2);
     expect(await testSql`select id from public.audit_log where entity_id = ${bookingId} and action = 'airbnb_collision'`).toHaveLength(1);
   });

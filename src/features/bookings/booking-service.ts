@@ -18,6 +18,7 @@ import {
   currentIndiaStayDate,
   type AvailabilityRequest,
   type CreateBookingRequest,
+  type ValidatedCreateBookingRequest,
 } from "./booking-schema";
 
 type BookingSql = postgres.Sql;
@@ -53,11 +54,18 @@ type StoredBooking = {
   currency: "INR";
   hold_expires_at: Date | string;
   razorpay_order_id: string | null;
+  razorpay_key_id: string | null;
   status: string;
 };
 
-function requestHash(request: CreateBookingRequest) {
+function requestHash(request: ValidatedCreateBookingRequest) {
   return createHash("sha256").update(JSON.stringify(request), "utf8").digest("hex");
+}
+
+function bookingGuestName(input: ValidatedCreateBookingRequest) {
+  return input.fullGuestName
+    ?? input.guestName
+    ?? `${input.firstName ?? ""} ${input.lastName ?? ""}`.trim();
 }
 
 function publicReference() {
@@ -165,7 +173,7 @@ export function createBookingService(
   async function loadAttemptBooking(idempotencyKey: string) {
     const [booking] = await sql<StoredBooking[]>`
       select b.id, b.property_id, b.public_reference, b.amount_paise, b.currency,
-        b.hold_expires_at, b.razorpay_order_id, b.status
+        b.hold_expires_at, b.razorpay_order_id, b.razorpay_key_id, b.status
       from public.booking_attempts a
       join public.bookings b on b.id = a.booking_id
       where a.idempotency_key = ${idempotencyKey}
@@ -197,6 +205,7 @@ export function createBookingService(
   ) {
     if (!booking.razorpay_order_id) throw new Error("ORDER_ID_REQUIRED");
     const orderId = booking.razorpay_order_id;
+    const razorpayKeyId = requireRazorpay().publicKeyId;
     return inventory.withPropertyInventory(booking.property_id, async (tx) => {
       const now = clock();
       const [active] = await tx`
@@ -211,7 +220,24 @@ export function createBookingService(
         for update of b
       `;
       if (!active) return null;
-      const response = checkoutResponse(booking, orderId, requireRazorpay().publicKeyId);
+      const [accountBound] = await tx`
+        update public.bookings set razorpay_key_id = ${razorpayKeyId}, updated_at = ${now}
+        where id = ${booking.id}
+        returning id
+      `;
+      if (!accountBound) throw new BookingServiceError("PAYMENT_ACCOUNT_MISMATCH", 503);
+      if (booking.razorpay_key_id !== razorpayKeyId) {
+        const changes = tx.json({ previousKeyId: booking.razorpay_key_id, currentKeyId: razorpayKeyId, source: "checkout_resume" });
+        await tx`
+          insert into public.booking_events (property_id, booking_id, event_type, metadata)
+          values (${booking.property_id}, ${booking.id}, 'razorpay_account_rebound', ${changes})
+        `;
+        await tx`
+          insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+          values (${booking.property_id}, 'razorpay_account_rebound', 'website_booking', ${booking.id}, ${changes})
+        `;
+      }
+      const response = checkoutResponse(booking, orderId, razorpayKeyId);
       await tx`
         update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
           terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
@@ -241,7 +267,7 @@ export function createBookingService(
   }
 
   async function createHold(
-    input: CreateBookingRequest,
+    input: ValidatedCreateBookingRequest,
     idempotencyKey: string,
     leaseToken: string,
   ) {
@@ -251,15 +277,18 @@ export function createBookingService(
       const quote = await authoritativeQuote(query, propertyId, input);
       const holdExpiresAt = new Date(clock().getTime() + 10 * 60_000);
       const reference = publicReference();
+      const guestName = bookingGuestName(input);
       const [booking] = await tx<StoredBooking[]>`
         insert into public.bookings (
           public_reference, property_id, guest_name, guest_email, guest_phone,
-          guest_count, checkin, checkout, status, hold_expires_at, amount_paise, currency
+          guest_count, checkin, checkout, status, hold_expires_at, amount_paise, currency,
+          booker_first_name, booker_last_name, country_code, special_requests
         ) values (
-          ${reference}, ${propertyId}, ${input.guestName}, ${input.guestEmail}, ${input.guestPhone},
-          ${input.guests}, ${input.checkin}, ${input.checkout}, 'held', ${holdExpiresAt}, ${quote.totalPaise}, 'INR'
+          ${reference}, ${propertyId}, ${guestName}, ${input.guestEmail}, ${input.guestPhone},
+          ${input.guests}, ${input.checkin}, ${input.checkout}, 'held', ${holdExpiresAt}, ${quote.totalPaise}, 'INR',
+          ${input.firstName ?? null}, ${input.lastName ?? null}, ${input.countryCode}, ${input.notes ?? null}
         ) returning id, property_id, public_reference, amount_paise, currency,
-          hold_expires_at, razorpay_order_id, status
+          hold_expires_at, razorpay_order_id, razorpay_key_id, status
       `;
       for (const night of quote.nights) {
         await tx`
@@ -364,6 +393,14 @@ export function createBookingService(
         }
       } else {
         if (booking.razorpay_order_id) {
+          if (booking.razorpay_key_id !== razorpay.publicKeyId) {
+            try {
+              await razorpay.fetchOrderPayments(booking.razorpay_order_id);
+            } catch {
+              await attempts.markRetryable(idempotencyKey, acquisition.leaseToken);
+              throw new BookingServiceError("PAYMENT_ACCOUNT_MISMATCH", 503);
+            }
+          }
           const response = await finalizeAttachedOrder(booking, idempotencyKey, acquisition.leaseToken);
           if (response) return response;
           await markOrderRecoveryInactive(booking);
@@ -428,16 +465,18 @@ export function createBookingService(
         `;
         if (!active) return false;
         const [saved] = await tx`
-          update public.bookings set razorpay_order_id = ${providerOrder.id}, updated_at = ${clock()}
+          update public.bookings set razorpay_order_id = ${providerOrder.id},
+            razorpay_key_id = ${razorpay.publicKeyId}, updated_at = ${clock()}
           where id = ${booking.id} and razorpay_order_id is null
             and status in ('processing', 'held') and hold_expires_at > ${clock()}
           returning id
         `;
         if (!saved) {
-          const [existing] = await tx<{ razorpay_order_id: string }[]>`
-            select razorpay_order_id from public.bookings where id = ${booking.id}
+          const [existing] = await tx<{ razorpay_order_id: string; razorpay_key_id: string | null }[]>`
+            select razorpay_order_id, razorpay_key_id from public.bookings where id = ${booking.id}
           `;
-          if (!existing || existing.razorpay_order_id !== providerOrder.id) throw new Error("ORDER_ID_CONFLICT");
+          if (!existing || existing.razorpay_order_id !== providerOrder.id
+            || existing.razorpay_key_id !== razorpay.publicKeyId) throw new Error("ORDER_ID_CONFLICT");
         }
         const [attempt] = await tx`
           update public.booking_attempts set durable_step = 'razorpay_order_created', updated_at = ${clock()}
@@ -457,7 +496,7 @@ export function createBookingService(
         await markOrderRecoveryInactive(booking, providerOrder.id);
         return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
       }
-      booking = { ...booking, razorpay_order_id: providerOrder.id };
+      booking = { ...booking, razorpay_order_id: providerOrder.id, razorpay_key_id: razorpay.publicKeyId };
       const response = checkoutResponse(booking, providerOrder.id, razorpay.publicKeyId);
       await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {
         status: "succeeded", httpStatus: 201, response,
@@ -466,13 +505,33 @@ export function createBookingService(
     },
 
     async getPublicBookingStatus(reference: string) {
-      const [booking] = await sql<{ status: string; refund_status: string }[]>`
-        select status, refund_status from public.bookings where public_reference = ${reference}
+      const [booking] = await sql<{
+        status: string;
+        refund_status: string;
+        public_reference: string;
+        property_name: string;
+        checkin: string;
+        checkout: string;
+        guest_count: number;
+        amount_paise: number;
+        currency: "INR";
+      }[]>`
+        select b.status, b.refund_status, b.public_reference, p.name as property_name,
+          b.checkin::text, b.checkout::text, b.guest_count, b.amount_paise, b.currency
+        from public.bookings b join public.properties p on p.id = b.property_id
+        where b.public_reference = ${reference}
       `;
       if (!booking) throw new BookingServiceError("BOOKING_NOT_FOUND", 404);
       return {
         status: booking.status === "held" ? "processing" : booking.status,
         refundStatus: booking.refund_status,
+        bookingReference: booking.public_reference,
+        propertyName: booking.property_name,
+        checkin: booking.checkin,
+        checkout: booking.checkout,
+        guestCount: booking.guest_count,
+        amountPaise: booking.amount_paise,
+        currency: booking.currency,
       };
     },
   };
@@ -500,5 +559,5 @@ export function createBooking(input: CreateBookingRequest, idempotencyKey: strin
 }
 
 export function getPublicBookingStatus(reference: string) {
-  return configuredService().getPublicBookingStatus(reference);
+  return configuredAvailabilityService().getPublicBookingStatus(reference);
 }

@@ -81,4 +81,16 @@ describe("admin booking reads", () => {
     const rows = await createAdminBookingService(testSql).listBookingsForUser(USER_ID, search);
     expect(rows.map((row) => row.publicReference)).toEqual([expected]);
   });
+
+  it("hides archived bookings by default and supports archived/all views", async () => {
+    const [property] = await testSql<{ id: string }[]>`insert into public.properties (name) values ('Archive Suite') returning id`;
+    await insertBooking(property.id, "NH-ACTIVE1234567", "Active Guest", "active@example.test");
+    const archivedId = await insertBooking(property.id, "NH-ARCHIVE123456", "Archived Guest", "archived@example.test");
+    await testSql`update public.bookings set status = 'cancelled', cancellation_reason = 'admin_refund', archived_at = now(), archived_by = ${USER_ID} where id = ${archivedId}`;
+
+    const service = createAdminBookingService(testSql);
+    expect((await service.listBookingsForUser(USER_ID)).map((row) => row.publicReference)).toEqual(["NH-ACTIVE1234567"]);
+    expect((await service.listBookingsForUser(USER_ID, undefined, "archived")).map((row) => row.publicReference)).toEqual(["NH-ARCHIVE123456"]);
+    expect(await service.listBookingsForUser(USER_ID, undefined, "all")).toHaveLength(2);
+  });
 });

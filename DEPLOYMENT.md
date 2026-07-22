@@ -6,7 +6,8 @@
 2. Apply the migrations in filename order: `0001_initial.sql`,
    `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
    `0004_shared_admin_workspace.sql`, `0005_manual_entry_payment.sql`,
-   `0006_preserve_airbnb_history.sql`, then `0007_public_booking.sql`.
+   `0006_preserve_airbnb_history.sql`, `0007_public_booking.sql`, then
+   `0008_premium_booking_checkout.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -36,6 +37,15 @@ snapshots, payment attempts, ten-minute holds, the partial active-night inventor
 index, provider event/job tables, notification outbox, and booking audit events.
 Keep `INVENTORY_LEDGER_MODE=shadow` and `PUBLIC_BOOKING_ENABLED=false` through the
 manual-entry/iCal parity gate. Applying the migration does not enable public sales.
+
+Migration `0008` adds premium guest fields, reversible archive metadata, and the
+non-secret Razorpay key ID that binds an order/refund to the account and mode
+that created it. Apply `0008` before deploying the matching admin code. Deploy
+admin immediately after the migration, verify `/api/health`, and deploy the
+public site last. The admin returns the legacy status shape unless the signed
+client sends `X-Noir-Api-Version: 2`, so the currently deployed public site
+continues working during this staged rollout. Do not reverse this order: the new
+public form sends additive fields that the old admin schema rejects.
 
 ## 2. Secrets
 
@@ -93,7 +103,28 @@ Immediately after a new environment starts, `/api/health` can return `503` with
 coarse `bookingWorker: stale` until the first one-minute worker run completes.
 It never lists missing configuration names or secret values.
 
-## 4. Existing server trigger
+## 4. One-minute booking worker
+
+For the Vercel Hobby deployment, use Supabase `pg_cron` + `pg_net` instead of
+Vercel Cron. In Supabase SQL Editor, store the production endpoint and the same
+server-only cron secret in Vault, then run `ops/setup-supabase-booking-worker.sql`:
+
+```sql
+select vault.create_secret(
+  'https://your-admin-domain.example/api/bookings/cron',
+  'noir_booking_worker_url'
+);
+select vault.create_secret(
+  'the-same-BOOKING_CRON_SECRET-stored-in-vercel',
+  'noir_booking_cron_secret'
+);
+```
+
+The setup SQL replaces only the named `noirhaus-booking-worker-minute` job and
+never embeds either secret in source control. Verify it with `cron.job` and
+`net._http_response`, then check `/api/health` after the first successful run.
+
+### Existing always-on server alternative
 
 Copy `ops/trigger-sync.sh` to the server. Create `/etc/haven-operations.env`
 with mode `600`:
@@ -103,7 +134,7 @@ APP_URL=https://your-vercel-domain.example
 SYNC_SECRET=the-same-secret-stored-in-vercel
 ```
 
-Install both lines from `ops/crontab.example`. The Airbnb trigger runs every 15 minutes,
+Install the relevant lines from `ops/crontab.example`. The Airbnb trigger runs every 15 minutes,
 uses a 70-second timeout and two transport retries, and exits non-zero for HTTP
 errors. Send `/var/log/haven-sync.log` to the server's existing monitoring.
 

@@ -3,6 +3,7 @@ import type postgres from "postgres";
 import { getDb } from "@/lib/db/client";
 
 type BookingSql = postgres.Sql;
+export type BookingArchiveView = "active" | "archived" | "all";
 
 export type AdminBookingNight = {
   stayDate: string;
@@ -30,8 +31,12 @@ export type AdminBookingRecord = {
   propertyId: string;
   propertyName: string;
   guestName: string;
+  bookerFirstName: string | null;
+  bookerLastName: string | null;
   guestEmail: string;
   guestPhone: string;
+  countryCode: string;
+  specialRequests: string | null;
   guestCount: number;
   checkin: string;
   checkout: string;
@@ -41,12 +46,15 @@ export type AdminBookingRecord = {
   currency: "INR";
   razorpayOrderId: string | null;
   razorpayPaymentId: string | null;
+  razorpayKeyId: string | null;
   cancellationReason: string | null;
   refundStatus: string;
   razorpayRefundId: string | null;
   createdAt: string;
   confirmedAt: string | null;
   cancelledAt: string | null;
+  archivedAt: string | null;
+  archivedBy: string | null;
   nights: AdminBookingNight[];
   notifications: AdminBookingNotification[];
   events: AdminBookingEvent[];
@@ -60,7 +68,7 @@ function searchPattern(search: string | undefined) {
 
 export function createAdminBookingService(sql: BookingSql) {
   return {
-    async listBookingsForUser(userId: string, search?: string): Promise<AdminBookingRecord[]> {
+    async listBookingsForUser(userId: string, search?: string, view: BookingArchiveView = "active"): Promise<AdminBookingRecord[]> {
       const pattern = searchPattern(search);
       const bookings = await sql<{
         id: string;
@@ -68,8 +76,12 @@ export function createAdminBookingService(sql: BookingSql) {
         property_id: string;
         property_name: string;
         guest_name: string;
+        booker_first_name: string | null;
+        booker_last_name: string | null;
         guest_email: string;
         guest_phone: string;
+        country_code: string;
+        special_requests: string | null;
         guest_count: number;
         checkin: string;
         checkout: string;
@@ -79,23 +91,31 @@ export function createAdminBookingService(sql: BookingSql) {
         currency: "INR";
         razorpay_order_id: string | null;
         razorpay_payment_id: string | null;
+        razorpay_key_id: string | null;
         cancellation_reason: string | null;
         refund_status: string;
         razorpay_refund_id: string | null;
         created_at: string;
         confirmed_at: string | null;
         cancelled_at: string | null;
+        archived_at: string | null;
+        archived_by: string | null;
       }[]>`
         select b.id, b.public_reference, b.property_id, p.name as property_name,
-          b.guest_name, b.guest_email, b.guest_phone, b.guest_count,
+          b.guest_name, b.booker_first_name, b.booker_last_name,
+          b.guest_email, b.guest_phone, b.country_code, b.special_requests, b.guest_count,
           b.checkin::text, b.checkout::text, b.status, b.hold_expires_at::text,
-          b.amount_paise, b.currency, b.razorpay_order_id, b.razorpay_payment_id,
+          b.amount_paise, b.currency, b.razorpay_order_id, b.razorpay_payment_id, b.razorpay_key_id,
           b.cancellation_reason, b.refund_status, b.razorpay_refund_id,
-          b.created_at::text, b.confirmed_at::text, b.cancelled_at::text
+          b.created_at::text, b.confirmed_at::text, b.cancelled_at::text,
+          b.archived_at::text, b.archived_by
         from public.bookings b
         join public.properties p on p.id = b.property_id
         join public.property_members pm on pm.property_id = b.property_id and pm.user_id = ${userId}
-        where (${pattern}::text is null or b.public_reference ilike ${pattern} escape '\\'
+        where (${view} = 'all'
+          or (${view} = 'active' and b.archived_at is null)
+          or (${view} = 'archived' and b.archived_at is not null))
+          and (${pattern}::text is null or b.public_reference ilike ${pattern} escape '\\'
           or b.guest_name ilike ${pattern} escape '\\'
           or b.guest_email ilike ${pattern} escape '\\')
         order by b.created_at desc, b.id
@@ -131,8 +151,12 @@ export function createAdminBookingService(sql: BookingSql) {
         propertyId: booking.property_id,
         propertyName: booking.property_name,
         guestName: booking.guest_name,
+        bookerFirstName: booking.booker_first_name,
+        bookerLastName: booking.booker_last_name,
         guestEmail: booking.guest_email,
         guestPhone: booking.guest_phone,
+        countryCode: booking.country_code,
+        specialRequests: booking.special_requests,
         guestCount: booking.guest_count,
         checkin: booking.checkin,
         checkout: booking.checkout,
@@ -142,12 +166,15 @@ export function createAdminBookingService(sql: BookingSql) {
         currency: booking.currency,
         razorpayOrderId: booking.razorpay_order_id,
         razorpayPaymentId: booking.razorpay_payment_id,
+        razorpayKeyId: booking.razorpay_key_id,
         cancellationReason: booking.cancellation_reason,
         refundStatus: booking.refund_status,
         razorpayRefundId: booking.razorpay_refund_id,
         createdAt: booking.created_at,
         confirmedAt: booking.confirmed_at,
         cancelledAt: booking.cancelled_at,
+        archivedAt: booking.archived_at,
+        archivedBy: booking.archived_by,
         nights: nights.filter((night) => night.booking_id === booking.id).map((night) => ({
           stayDate: night.stay_date,
           pricePaise: night.price_paise,
@@ -170,6 +197,6 @@ export function createAdminBookingService(sql: BookingSql) {
   };
 }
 
-export function listBookingsForUser(userId: string, search?: string) {
-  return createAdminBookingService(getDb()).listBookingsForUser(userId, search);
+export function listBookingsForUser(userId: string, search?: string, view: BookingArchiveView = "active") {
+  return createAdminBookingService(getDb()).listBookingsForUser(userId, search, view);
 }

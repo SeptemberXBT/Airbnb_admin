@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { processRazorpayWebhookEvent } from "@/features/payments/payment-reconciliation";
 import { parseRazorpayWebhook, verifyRazorpayWebhookSignature } from "@/features/payments/razorpay-webhook";
+import { scheduleBookingJobs } from "@/features/bookings/schedule-jobs";
+
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -14,6 +17,7 @@ export async function POST(request: Request) {
   try {
     const event = parseRazorpayWebhook(rawBody);
     await processRazorpayWebhookEvent(eventId, event, rawBody);
+    scheduleBookingJobs();
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof Error && ["INVALID_RAZORPAY_WEBHOOK", "UNSUPPORTED_RAZORPAY_EVENT"].includes(error.message)) {

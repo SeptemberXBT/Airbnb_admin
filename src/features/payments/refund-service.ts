@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 import { enqueueNotification } from "@/features/email/outbox-service";
 import { renderEmailTemplate } from "@/features/email/templates";
+import type { RazorpayPayment } from "./razorpay-client";
 
 export type ProviderRefund = { id: string; status: "pending" | "processed" | "failed" };
 
@@ -23,6 +24,20 @@ function parseRefund(value: unknown): ProviderRefund {
     throw new RefundProviderError("ambiguous", "REFUND_INVALID_RESPONSE");
   }
   return { id: refund.id, status: refund.status as ProviderRefund["status"] };
+}
+
+function parsePayments(value: unknown): RazorpayPayment[] {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { items?: unknown }).items)) {
+    throw new RefundProviderError("ambiguous", "REFUND_INVALID_RESPONSE");
+  }
+  return (value as { items: unknown[] }).items.map((item) => {
+    if (!item || typeof item !== "object") throw new RefundProviderError("ambiguous", "REFUND_INVALID_RESPONSE");
+    const payment = item as Record<string, unknown>;
+    if (typeof payment.id !== "string" || typeof payment.status !== "string" || !Number.isSafeInteger(payment.amount)) {
+      throw new RefundProviderError("ambiguous", "REFUND_INVALID_RESPONSE");
+    }
+    return payment as RazorpayPayment;
+  });
 }
 
 export function createRazorpayRefundProvider(options: {
@@ -56,6 +71,12 @@ export function createRazorpayRefundProvider(options: {
     }
   }
   return {
+    publicKeyId: options.keyId,
+
+    async fetchOrderPayments(orderId: string) {
+      return parsePayments(await request(`/v1/orders/${encodeURIComponent(orderId)}/payments`));
+    },
+
     async findRefund(paymentId: string, identity: string) {
       const value = await request(`/v1/payments/${encodeURIComponent(paymentId)}/refunds`);
       if (!value || typeof value !== "object" || !Array.isArray((value as { items?: unknown }).items)) {
@@ -81,7 +102,7 @@ type RefundProvider = ReturnType<typeof createRazorpayRefundProvider>;
 
 export function createRefundService(
   sql: postgres.Sql,
-  dependencies: { provider: Pick<RefundProvider, "findRefund" | "createFullRefund">; clock?: () => Date },
+  dependencies: { provider: Pick<RefundProvider, "publicKeyId" | "fetchOrderPayments" | "findRefund" | "createFullRefund">; clock?: () => Date },
 ) {
   const clock = dependencies.clock ?? (() => new Date());
 
@@ -123,6 +144,7 @@ export function createRefundService(
       const rows = await sql<{
         id: string;
         booking_id: string;
+        property_id: string;
         idempotency_identity: string;
         guest_name: string;
         guest_email: string;
@@ -132,6 +154,10 @@ export function createRefundService(
         checkout: string;
         amount_paise: number;
         razorpay_payment_id: string | null;
+        razorpay_order_id: string;
+        razorpay_key_id: string | null;
+        cancellation_reason: string | null;
+        late_payment_refund: boolean;
         attempt_count: number;
       }[]>`
         with ready as (
@@ -144,9 +170,15 @@ export function createRefundService(
           attempt_count = attempt_count + 1, updated_at = ${now}
         from ready, public.bookings b, public.properties p
         where j.id = ready.id and b.id = j.booking_id and p.id = b.property_id
-        returning j.id, j.booking_id, j.idempotency_identity, b.guest_name, b.guest_email,
+        returning j.id, j.booking_id, b.property_id, j.idempotency_identity,
+          b.guest_name, b.guest_email,
           p.name as property_name, b.public_reference, b.checkin::text, b.checkout::text,
-          b.amount_paise, b.razorpay_payment_id, j.attempt_count
+          b.amount_paise, b.razorpay_payment_id, b.razorpay_order_id, b.razorpay_key_id,
+          b.cancellation_reason, j.attempt_count,
+          exists (
+            select 1 from public.booking_events e
+            where e.booking_id = b.id and e.event_type = 'late_payment_after_expiry'
+          ) as late_payment_refund
       `;
       let processed = 0;
       let retryable = 0;
@@ -161,9 +193,82 @@ export function createRefundService(
           failed += 1;
           continue;
         }
+        if (row.razorpay_key_id !== dependencies.provider.publicKeyId) {
+          let payments: RazorpayPayment[];
+          try {
+            payments = await dependencies.provider.fetchOrderPayments(row.razorpay_order_id);
+          } catch {
+            await sql`
+              update public.payment_jobs set status = 'retryable_failure',
+                next_attempt_at = ${new Date(clock().getTime() + 5 * 60_000)},
+                last_error_code = 'razorpay_account_mismatch', lease_token = null,
+                lease_expires_at = null, updated_at = ${clock()}
+              where id = ${row.id} and lease_token = ${leaseToken}
+            `;
+            retryable += 1;
+            continue;
+          }
+          const exactPayment = payments.find((payment) => payment.id === row.razorpay_payment_id
+            && payment.status === "captured" && payment.amount === row.amount_paise);
+          if (!exactPayment) {
+            await sql`
+              update public.payment_jobs set status = 'retryable_failure',
+                next_attempt_at = ${new Date(clock().getTime() + 5 * 60_000)},
+                last_error_code = 'razorpay_account_mismatch', lease_token = null,
+                lease_expires_at = null, updated_at = ${clock()}
+              where id = ${row.id} and lease_token = ${leaseToken}
+            `;
+            retryable += 1;
+            continue;
+          }
+          const rebound = await sql.begin(async (tx) => {
+            const [bound] = await tx`
+              update public.bookings set razorpay_key_id = ${dependencies.provider.publicKeyId}, updated_at = ${clock()}
+              where id = ${row.booking_id} and razorpay_order_id = ${row.razorpay_order_id}
+                and razorpay_payment_id = ${row.razorpay_payment_id} and amount_paise = ${row.amount_paise}
+              returning id
+            `;
+            if (!bound) return false;
+            await tx`
+              insert into public.booking_events (property_id, booking_id, event_type, metadata)
+              values (${row.property_id}, ${row.booking_id}, 'razorpay_account_rebound',
+                ${tx.json({ previousKeyId: row.razorpay_key_id, currentKeyId: dependencies.provider.publicKeyId, source: "refund_worker" })})
+            `;
+            await tx`
+              insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+              values (${row.property_id}, 'razorpay_account_rebound', 'website_booking', ${row.booking_id},
+                ${tx.json({ previousKeyId: row.razorpay_key_id, currentKeyId: dependencies.provider.publicKeyId, source: "refund_worker" })})
+            `;
+            return true;
+          });
+          if (!rebound) {
+            await sql`
+              update public.payment_jobs set status = 'retryable_failure',
+                next_attempt_at = ${new Date(clock().getTime() + 5 * 60_000)},
+                last_error_code = 'razorpay_account_rebind_failed', lease_token = null,
+                lease_expires_at = null, updated_at = ${clock()}
+              where id = ${row.id} and lease_token = ${leaseToken}
+            `;
+            retryable += 1;
+            continue;
+          }
+          row.razorpay_key_id = dependencies.provider.publicKeyId;
+        }
         let refund: ProviderRefund;
         try {
-          refund = await dependencies.provider.findRefund(row.razorpay_payment_id, row.idempotency_identity)
+          const aliases = await sql<{ idempotency_identity: string }[]>`
+            select idempotency_identity from public.payment_refund_job_aliases
+            where booking_id = ${row.booking_id}
+            order by (status = 'succeeded') desc, (provider_id is not null) desc, created_at, original_job_id
+          `;
+          const refundIdentities = [row.idempotency_identity, ...aliases.map((alias) => alias.idempotency_identity)];
+          let discovered: ProviderRefund | null = null;
+          const rank = { processed: 0, pending: 1, failed: 2 } as const;
+          for (const identity of refundIdentities) {
+            const candidate = await dependencies.provider.findRefund(row.razorpay_payment_id, identity);
+            if (candidate && (!discovered || rank[candidate.status] < rank[discovered.status])) discovered = candidate;
+          }
+          refund = discovered
             ?? await dependencies.provider.createFullRefund(row.razorpay_payment_id, row.idempotency_identity);
         } catch (error) {
           const definitive = error instanceof RefundProviderError && error.kind === "definitive";
@@ -201,7 +306,7 @@ export function createRefundService(
             await tx`update public.payment_jobs set status = 'retryable_failure', provider_id = ${refund.id}, next_attempt_at = ${new Date(clock().getTime() + 5 * 60_000)}, last_error_code = null, lease_token = null, lease_expires_at = null, updated_at = ${clock()} where id = ${row.id} and lease_token = ${leaseToken}`;
             await tx`update public.bookings set refund_status = 'pending', razorpay_refund_id = ${refund.id}, updated_at = ${clock()} where id = ${row.booking_id}`;
           });
-          if (row.idempotency_identity.startsWith("late-payment:")) {
+          if (row.late_payment_refund) {
             await enqueueTemplate(row, "late_payment_refund", "guest");
           }
           retryable += 1;

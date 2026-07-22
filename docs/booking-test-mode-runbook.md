@@ -27,6 +27,12 @@ deployment, public-booking enablement, or Razorpay Live Mode.
 7. Create an isolated admin Preview with enforced inventory and Test Mode
    booking enabled. Never point the public Preview at the production admin.
 
+For the premium checkout release, apply `0008_premium_booking_checkout.sql`,
+then deploy admin, verify health/status with the existing public site, and only
+then deploy public. Version 2 signed requests receive the expanded safe booking
+summary while an unversioned deployed client keeps the legacy response. This
+ordering prevents either strict schema from seeing an incompatible payload.
+
 The production public-booking flag remains `false` until a later, explicit
 approval. Do not use the rollback migration merely to disable sales; use the
 feature flag first so payment/refund/email workers can finish durable work.
@@ -173,6 +179,11 @@ In the Razorpay Test Mode dashboard:
 
 The browser receives only the public key ID, order ID, amount, and currency that
 admin computed. It never receives the Razorpay key secret or webhook secret.
+The admin also records that non-secret key ID on the booking. A refund remains
+retryable and is never sent when the worker's configured key ID does not match
+the booking. For a pre-migration booking with no recorded key ID, the admin
+verifies that the configured account can see the exact captured order/payment
+before it archives the booking or releases inventory.
 The webhook and the one-minute reconciliation worker remain the source of truth;
 the Checkout handler only asks admin to reconcile.
 
@@ -197,10 +208,13 @@ item and a visible operations failure.
 
 ## 7. Cron and health monitoring
 
-Install `ops/trigger-booking-jobs.sh` on an always-on external host and load
-`APP_URL` plus `BOOKING_CRON_SECRET` from a root-readable mode-`600` file.
-Install the one-minute line in `ops/crontab.example`. Do not use a sleeping
-hobby instance as the scheduler.
+On Vercel Hobby, store `noir_booking_worker_url` and
+`noir_booking_cron_secret` in Supabase Vault, then run
+`ops/setup-supabase-booking-worker.sql` in Supabase SQL Editor. This installs a
+one-minute `pg_cron` job that calls the existing authenticated endpoint through
+`pg_net`. An always-on external host running `ops/trigger-booking-jobs.sh`
+remains a supported alternative. Do not use a sleeping hobby instance as the
+scheduler.
 
 Monitor:
 
