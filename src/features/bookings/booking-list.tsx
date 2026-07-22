@@ -1,5 +1,6 @@
 import type { AdminBookingRecord } from "./admin-booking-service";
 import { BookingRefundAction } from "./booking-refund-action";
+import { BookingTestCleanupAction } from "./booking-test-cleanup-action";
 
 export type AdminBooking = AdminBookingRecord;
 
@@ -39,8 +40,9 @@ export function BookingList({ bookings }: { bookings: AdminBooking[] }) {
 
   return (
     <div className="booking-list">
-      {bookings.map((booking) => (
-        <article className="booking-card" aria-label={`Booking ${booking.publicReference}`} key={booking.id}>
+      {bookings.map((booking) => {
+        const isTestBooking = booking.razorpayKeyId?.startsWith("rzp_test_") ?? false;
+        return <article className="booking-card" aria-label={`Booking ${booking.publicReference}`} key={booking.id}>
           <header className="booking-card__header">
             <div><span>{booking.propertyName}</span><h2>{booking.publicReference}</h2></div>
             <span className={`booking-status booking-status--${booking.status}`}>{booking.archivedAt ? "archived" : booking.status.replaceAll("_", " ")}</span>
@@ -61,15 +63,18 @@ export function BookingList({ bookings }: { bookings: AdminBooking[] }) {
               <section><h3>Guest requests</h3><dl><dt>Booker</dt><dd>{[booking.bookerFirstName, booking.bookerLastName].filter(Boolean).join(" ") || booking.guestName}</dd><dt>Country</dt><dd>{booking.countryCode}</dd><dt>Requests</dt><dd>{booking.specialRequests || "—"}</dd></dl></section>
             </div>
           </details>
-          {!booking.archivedAt && booking.status === "confirmed" && booking.razorpayPaymentId
+          {!booking.archivedAt && isTestBooking
+            ? <BookingTestCleanupAction bookingId={booking.id} publicReference={booking.publicReference} />
+            : null}
+          {!booking.archivedAt && !isTestBooking && booking.status === "confirmed" && booking.razorpayPaymentId
             ? <BookingRefundAction bookingId={booking.id} publicReference={booking.publicReference} />
             : null}
           {booking.archivedAt && booking.cancellationReason === "admin_refund"
             && booking.refundStatus === "failed" && booking.razorpayPaymentId
             ? <BookingRefundAction bookingId={booking.id} publicReference={booking.publicReference} retry />
             : null}
-        </article>
-      ))}
+        </article>;
+      })}
     </div>
   );
 }

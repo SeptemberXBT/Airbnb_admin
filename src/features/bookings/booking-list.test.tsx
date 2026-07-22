@@ -23,7 +23,7 @@ const booking: AdminBooking = {
   currency: "INR",
   razorpayOrderId: "order_test_123",
   razorpayPaymentId: "pay_test_123",
-  razorpayKeyId: "rzp_test_example",
+  razorpayKeyId: "rzp_live_example",
   cancellationReason: null,
   refundStatus: "not_required",
   razorpayRefundId: null,
@@ -48,7 +48,8 @@ describe("BookingList", () => {
   it("shows premium guest detail and exposes the guarded full refund action", () => {
     render(<BookingList bookings={[booking]} />);
 
-    const card = screen.getByRole("article", { name: /NH-BOOKING123456/i });
+    const cards = screen.getAllByRole("article", { name: /NH-BOOKING123456/i });
+    const card = cards[cards.length - 1];
     expect(within(card).getAllByText("Riya Sharma")[0]).toBeVisible();
     expect(within(card).getByText("riya@example.test")).toBeVisible();
     expect(within(card).getByText("₹12,500")).toBeVisible();
@@ -68,6 +69,14 @@ describe("BookingList", () => {
     const card = cards[cards.length - 1];
     expect(within(card).queryByRole("button", { name: /refund, cancel & archive/i })).not.toBeInTheDocument();
     expect(within(card).getByText(/archived/i)).toBeVisible();
+  });
+
+  it("offers test cleanup instead of a live refund for a test-mode booking", () => {
+    render(<BookingList bookings={[{ ...booking, razorpayKeyId: "rzp_test_example" }]} />);
+    const cards = screen.getAllByRole("article", { name: /NH-BOOKING123456/i });
+    const card = cards[cards.length - 1];
+    expect(within(card).getByRole("button", { name: /remove test booking/i })).toBeVisible();
+    expect(within(card).queryByRole("button", { name: /refund, cancel & archive/i })).not.toBeInTheDocument();
   });
 
   it("offers an audited retry when an archived admin refund failed", () => {

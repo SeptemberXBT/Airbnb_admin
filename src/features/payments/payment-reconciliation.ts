@@ -108,6 +108,11 @@ export function createPaymentReconciliationService(
         from public.bookings where id = ${booking.id}
       `;
       if (!current) throw new PaymentReconciliationError("BOOKING_NOT_FOUND", 404);
+      if (current.status === "cancelled"
+        && current.cancellation_reason === "admin_test_cleanup"
+        && current.razorpay_key_id?.startsWith("rzp_test_")) {
+        return publicState(current);
+      }
       const previousKeyId = current.razorpay_key_id;
       const [accountBound] = await tx<{ razorpay_key_id: string }[]>`
         update public.bookings set razorpay_key_id = ${dependencies.razorpay.publicKeyId},
