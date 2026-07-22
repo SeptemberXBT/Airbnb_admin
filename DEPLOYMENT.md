@@ -7,7 +7,8 @@
    `0002_cleaning_task_identity.sql`, `0003_universal_operation_times.sql`, then
    `0004_shared_admin_workspace.sql`, `0005_manual_entry_payment.sql`,
    `0006_preserve_airbnb_history.sql`, `0007_public_booking.sql`, then
-   `0008_premium_booking_checkout.sql`.
+   `0008_premium_booking_checkout.sql`, then
+   `0009_optional_inbound_ical.sql`.
 3. Create the first manager in Supabase Authentication. Disable public signup.
 4. Use the pooled Postgres connection string for `DATABASE_URL`.
 
@@ -46,6 +47,12 @@ public site last. The admin returns the legacy status shape unless the signed
 client sends `X-Noir-Api-Version: 2`, so the currently deployed public site
 continues working during this staged rollout. Do not reverse this order: the new
 public form sends additive fields that the old admin schema rejects.
+
+Migration `0009` makes a null inbound iCal feed an intentional disconnected
+listing state. Apply it before deploying code that imports listings without their
+old encryption key. Scheduled and manual sync skip disconnected listings until
+an administrator saves a valid Airbnb export URL; historical imported calendar
+events remain available while the feed is disconnected.
 
 ## 2. Secrets
 
