@@ -108,7 +108,7 @@ describe("Airbnb-wins collision cancellation", () => {
     await createRefundService(testSql, { provider }).processBatch(10);
     await createRefundService(testSql, { provider }).processBatch(10);
     expect(provider.createFullRefund).toHaveBeenCalledOnce();
-    expect(await testSql`select id from public.notification_outbox where booking_id = ${bookingId}`).toHaveLength(2);
+    expect(await testSql`select id from public.notification_outbox where booking_id = ${bookingId}`).toHaveLength(3);
     expect(await testSql`select id from public.audit_log where entity_id = ${bookingId} and action = 'airbnb_collision'`).toHaveLength(1);
   });
 

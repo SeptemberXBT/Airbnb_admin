@@ -24,7 +24,6 @@ describe("admin refund, cancellation, and archive", () => {
     await testSql`insert into auth.users (id, email) values (${USER_ID}, 'owner@example.test')`;
     const [property] = await testSql<{ id: string }[]>`insert into public.properties (name) values ('Refund Suite') returning id`;
     propertyId = property.id;
-    await testSql`insert into public.property_members (property_id, user_id) values (${propertyId}, ${USER_ID})`;
     const [booking] = await testSql<{ id: string }[]>`
       insert into public.bookings (
         public_reference, property_id, guest_name, guest_email, guest_phone, guest_count,
