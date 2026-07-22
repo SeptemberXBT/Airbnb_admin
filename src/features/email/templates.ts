@@ -7,6 +7,8 @@ export type EmailTemplateKey =
   | "late_payment_refund"
   | "refund_failed_admin";
 
+export type GenericEmailTemplateKey = Exclude<EmailTemplateKey, "booking_confirmation">;
+
 export type EmailTemplateData = {
   guestName: string;
   propertyName: string;
@@ -22,9 +24,8 @@ function escapeHtml(value: string) {
   })[character] as string);
 }
 
-function copy(key: EmailTemplateKey) {
-  const values: Record<EmailTemplateKey, { title: string; message: string }> = {
-    booking_confirmation: { title: "Booking confirmed", message: "Your stay is confirmed." },
+function copy(key: GenericEmailTemplateKey) {
+  const values: Record<GenericEmailTemplateKey, { title: string; message: string }> = {
     admin_new_booking: { title: "New website booking", message: "A website booking has been confirmed." },
     collision_no_refund: { title: "Booking cancelled", message: "An Airbnb calendar conflict means we cannot host this stay. No payment was captured." },
     collision_refund_initiated: { title: "Booking cancelled — refund initiated", message: "An Airbnb calendar conflict means we cannot host this stay. Your full refund has been initiated." },
@@ -35,7 +36,7 @@ function copy(key: EmailTemplateKey) {
   return values[key];
 }
 
-export function renderEmailTemplate(key: EmailTemplateKey, data: EmailTemplateData) {
+export function renderEmailTemplate(key: GenericEmailTemplateKey, data: EmailTemplateData) {
   const content = copy(key);
   const amount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(data.amountPaise / 100);
   const details = [

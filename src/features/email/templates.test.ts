@@ -12,7 +12,6 @@ const booking = {
 
 describe("transactional email templates", () => {
   it.each([
-    "booking_confirmation",
     "admin_new_booking",
     "collision_no_refund",
     "collision_refund_initiated",
