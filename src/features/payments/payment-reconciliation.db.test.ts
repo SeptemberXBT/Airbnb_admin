@@ -106,7 +106,10 @@ describe("payment reconciliation", () => {
   it("deduplicates webhook event IDs and ignores an out-of-order authorization after capture", async () => {
     const booking = await addHeldBooking();
     const service = createPaymentReconciliationService(testSql, {
-      razorpay: fakeRazorpay([]), clock: () => NOW,
+      razorpay: fakeRazorpay([{
+        id: "pay_webhook_captured", status: "captured", amount: 1200000,
+      }]),
+      clock: () => NOW,
     });
     const captured = {
       eventType: "payment.captured" as const,

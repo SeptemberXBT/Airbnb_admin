@@ -5,6 +5,10 @@ import { createNotificationOutboxService, enqueueNotification } from "./outbox-s
 const NOW = new Date("2026-07-21T23:00:00.000Z");
 let bookingId: string;
 
+async function makeOutboxReady() {
+  await testSql`update public.notification_outbox set next_attempt_at = ${NOW}`;
+}
+
 describe("notification outbox", () => {
   beforeEach(async () => {
     await resetDb();
@@ -27,6 +31,7 @@ describe("notification outbox", () => {
     };
     await enqueueNotification(testSql, message);
     await enqueueNotification(testSql, message);
+    await makeOutboxReady();
     const mailer = { send: vi.fn(async () => ({ providerMessageId: "zepto-message-1" })) };
     const service = createNotificationOutboxService(testSql, { mailer, clock: () => NOW });
     expect(await service.processBatch(10)).toEqual({ sent: 1, failed: 0 });
@@ -41,6 +46,7 @@ describe("notification outbox", () => {
       templateKey: "admin_new_booking", deduplicationKey: `admin:${bookingId}:${suffix}`,
       subject: suffix, htmlBody: suffix, textBody: suffix,
     });
+    await makeOutboxReady();
     const mailer = { send: vi.fn()
       .mockRejectedValueOnce(new Error("provider detail"))
       .mockResolvedValueOnce({ providerMessageId: "zepto-message-2" }) };
@@ -59,7 +65,7 @@ describe("notification outbox", () => {
       templateKey: "booking_confirmation", deduplicationKey: `terminal-mail:${bookingId}`,
       subject: "Confirmed", htmlBody: "<p>Confirmed</p>", textBody: "Confirmed",
     });
-    await testSql`update public.notification_outbox set attempt_count = 7`;
+    await testSql`update public.notification_outbox set attempt_count = 7, next_attempt_at = ${NOW}`;
     const service = createNotificationOutboxService(testSql, {
       mailer: { send: vi.fn(async () => { throw new Error("provider unavailable"); }) },
       clock: () => NOW,
