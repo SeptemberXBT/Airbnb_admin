@@ -76,13 +76,31 @@ describe("payment reconciliation", () => {
       select count(*)::int as count from public.local_calendar_entries where booking_id = ${booking.id}
     `;
     expect(count).toBe(1);
-    const messages = await testSql<{ recipient_kind: string; template_key: string }[]>`
-      select recipient_kind, template_key from public.notification_outbox where booking_id = ${booking.id} order by recipient_kind
+    const messages = await testSql<{
+      recipient_kind: string;
+      template_key: string;
+      subject: string;
+      html_body: string;
+      text_body: string;
+    }[]>`
+      select recipient_kind, template_key, subject, html_body, text_body
+      from public.notification_outbox where booking_id = ${booking.id} order by recipient_kind
     `;
-    expect(messages).toEqual([
+    expect(messages.map(({ recipient_kind, template_key }) => ({ recipient_kind, template_key }))).toEqual([
       { recipient_kind: "admin", template_key: "admin_new_booking" },
       { recipient_kind: "guest", template_key: "booking_confirmation" },
     ]);
+    const guestMessage = messages.find((message) => message.recipient_kind === "guest");
+    expect(guestMessage).toMatchObject({
+      subject: `Your Noir Haus booking is confirmed — ${booking.public_reference}`,
+    });
+    expect(guestMessage?.html_body).toContain("Payment Suite");
+    expect(guestMessage?.html_body).toContain("2 guests");
+    expect(guestMessage?.html_body).toContain("1:00 PM");
+    expect(guestMessage?.html_body).toContain("11:00 AM");
+    expect(guestMessage?.html_body).toContain("pay_captured");
+    expect(guestMessage?.html_body).toContain("hello@noirhaus.in");
+    expect(guestMessage?.text_body).toContain("PAYMENT STATUS: Paid");
   });
 
   it("deduplicates webhook event IDs and ignores an out-of-order authorization after capture", async () => {

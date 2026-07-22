@@ -7,6 +7,8 @@ import { createRazorpayClient, RazorpayClientError, type RazorpayPayment } from 
 import type { ParsedRazorpayWebhook } from "./razorpay-webhook";
 import { enqueueNotification } from "@/features/email/outbox-service";
 import { renderEmailTemplate } from "@/features/email/templates";
+import { renderBookingConfirmationEmail } from "@/features/email/booking-confirmation-template";
+import { resolveGuestSupportEmail } from "@/features/email/email-config";
 
 type PaymentSql = postgres.Sql;
 type PaymentLookup = { publicKeyId: string; fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
@@ -19,6 +21,7 @@ type BookingRow = {
   guest_name: string;
   guest_email: string;
   guest_phone: string;
+  guest_count: number;
   checkin: string;
   checkout: string;
   status: string;
@@ -62,7 +65,7 @@ export function createPaymentReconciliationService(
 
   async function bookingByReference(reference: string) {
     const [booking] = await sql<BookingRow[]>`
-      select id, property_id, public_reference, guest_name, guest_email, guest_phone,
+      select id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
         checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
         razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       from public.bookings where public_reference = ${reference}
@@ -73,7 +76,7 @@ export function createPaymentReconciliationService(
 
   async function bookingByOrder(orderId: string) {
     const [booking] = await sql<BookingRow[]>`
-      select id, property_id, public_reference, guest_name, guest_email, guest_phone,
+      select id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
         checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
         razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       from public.bookings where razorpay_order_id = ${orderId}
@@ -99,7 +102,7 @@ export function createPaymentReconciliationService(
   ) {
     return inventory.withPropertyInventory(booking.property_id, async (tx) => {
       const [current] = await tx<BookingRow[]>`
-        select id, property_id, public_reference, guest_name, guest_email, guest_phone,
+        select id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
           checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
           razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         from public.bookings where id = ${booking.id}
@@ -165,13 +168,13 @@ export function createPaymentReconciliationService(
           set status = 'confirmed', razorpay_payment_id = ${state.payment.id},
             confirmed_at = coalesce(confirmed_at, ${clock()}), updated_at = ${clock()}
           where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
-          returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
+          returning id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
             checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
             razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         `;
         if (!confirmed) {
           const [latest] = await tx<BookingRow[]>`
-            select id, property_id, public_reference, guest_name, guest_email, guest_phone,
+            select id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
               checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
               razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
             from public.bookings where id = ${current.id}
@@ -199,10 +202,16 @@ export function createPaymentReconciliationService(
           insert into public.booking_events (property_id, booking_id, event_type, metadata)
           values (${current.property_id}, ${current.id}, 'payment_confirmed', ${tx.json({ trigger })})
         `;
-        const [property] = await tx<{ name: string }[]>`
-          select name from public.properties where id = ${current.property_id}
+        const [property] = await tx<{
+          name: string;
+          default_checkin_time: string;
+          default_checkout_time: string;
+        }[]>`
+          select name, default_checkin_time::text, default_checkout_time::text
+          from public.properties where id = ${current.property_id}
         `;
-        const templateData = {
+        if (!property) throw new PaymentReconciliationError("PROPERTY_NOT_FOUND");
+        const genericTemplateData = {
           guestName: current.guest_name,
           propertyName: property.name,
           bookingReference: current.public_reference,
@@ -216,7 +225,14 @@ export function createPaymentReconciliationService(
           recipientEmail: current.guest_email,
           templateKey: "booking_confirmation",
           deduplicationKey: `booking-confirmed:${current.id}:guest`,
-          ...renderEmailTemplate("booking_confirmation", templateData),
+          ...renderBookingConfirmationEmail({
+            ...genericTemplateData,
+            checkinTime: property.default_checkin_time,
+            checkoutTime: property.default_checkout_time,
+            guestCount: current.guest_count,
+            paymentId: state.payment.id,
+            supportEmail: resolveGuestSupportEmail(),
+          }),
         });
         const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
         if (adminEmail) await enqueueNotification(tx, {
@@ -225,7 +241,7 @@ export function createPaymentReconciliationService(
           recipientEmail: adminEmail,
           templateKey: "admin_new_booking",
           deduplicationKey: `booking-confirmed:${current.id}:admin`,
-          ...renderEmailTemplate("admin_new_booking", templateData),
+          ...renderEmailTemplate("admin_new_booking", genericTemplateData),
         });
         return publicState(confirmed);
       }
@@ -237,7 +253,7 @@ export function createPaymentReconciliationService(
           update public.bookings set status = 'payment_pending',
             razorpay_payment_id = ${state.payment.id}, updated_at = ${clock()}
           where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
-          returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
+          returning id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
             checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
             razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         `;
@@ -251,7 +267,7 @@ export function createPaymentReconciliationService(
       const [releasedBooking] = await tx<BookingRow[]>`
         update public.bookings set status = ${status}, updated_at = ${clock()}
         where id = ${current.id} and status in ('processing', 'held', 'payment_pending')
-        returning id, property_id, public_reference, guest_name, guest_email, guest_phone,
+        returning id, property_id, public_reference, guest_name, guest_email, guest_phone, guest_count,
           checkin::text, checkout::text, status, amount_paise, razorpay_order_id,
           razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
       `;
