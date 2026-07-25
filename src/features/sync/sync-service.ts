@@ -44,9 +44,13 @@ export function createSyncReconciliationService(sql: SyncSql, inventoryMode: Inv
           ...plan.archive,
           ...plan.retainHistory,
         ]);
+        const changedIncoming = [
+          ...plan.create,
+          ...plan.update.map(({ event }) => event),
+        ];
         const bounds = affectedReconciliationBounds(
           existing.filter((event) => changedExistingIds.has(event.id)),
-          incoming,
+          changedIncoming,
         );
 
         for (const event of plan.create) {

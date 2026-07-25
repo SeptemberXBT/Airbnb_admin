@@ -33,4 +33,14 @@ describe("calendar sync history persistence", () => {
     expect(source).not.toMatch(/pg_try_advisory_lock\(/);
     expect(source).not.toMatch(/pg_advisory_unlock\(/);
   });
+
+  it("reconciles inventory only for calendar events that changed", async () => {
+    const source = await readFile(path.join(process.cwd(), "src/features/sync/sync-service.ts"), "utf8");
+
+    expect(source).toMatch(/const changedIncoming = \[[\s\S]*\.\.\.plan\.create,[\s\S]*\.\.\.plan\.update\.map\(\(\{ event \}\) => event\),[\s\S]*\];/);
+    expect(source).toMatch(/affectedReconciliationBounds\([\s\S]*existing\.filter\([\s\S]*changedIncoming,[\s\S]*\)/);
+    expect(source).not.toContain(
+      "existing.filter((event) => changedExistingIds.has(event.id)),\n          incoming,",
+    );
+  });
 });
