@@ -302,10 +302,9 @@ export async function runCalendarSync(source: SyncSource, userId?: string) {
     if (recent) return { status: "cooldown" as const, results: [] };
   }
 
-  const lockConnection = await sql.reserve();
-  try {
-    const [lock] = await lockConnection<{ acquired: boolean }[]>`
-      select pg_try_advisory_lock(hashtext('airbnb_operations_calendar_sync')) as acquired
+  return sql.begin(async (lockTx) => {
+    const [lock] = await lockTx<{ acquired: boolean }[]>`
+      select pg_try_advisory_xact_lock(hashtext('airbnb_operations_calendar_sync')) as acquired
     `;
     if (!lock.acquired) return { status: "locked" as const, results: [] };
     const listings = await getListings(source, userId);
@@ -314,8 +313,5 @@ export async function runCalendarSync(source: SyncSource, userId?: string) {
       ? result.value
       : { listingId: listings[index].id, status: "failure" as const, errorCode: "sync_failed" });
     return { status: "completed" as const, results };
-  } finally {
-    await lockConnection`select pg_advisory_unlock(hashtext('airbnb_operations_calendar_sync'))`;
-    lockConnection.release();
-  }
+  });
 }

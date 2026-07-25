@@ -24,4 +24,13 @@ describe("calendar sync history persistence", () => {
     expect(source).toMatch(/where l\.active and l\.archived_at is null[\s\S]*l\.inbound_ical_url_encrypted is not null/i);
     expect(source).toMatch(/where active and archived_at is null[\s\S]*inbound_ical_url_encrypted is not null/i);
   });
+
+  it("uses a transaction-scoped coordinator lock that cannot leak through a transaction pooler", async () => {
+    const source = await readFile(path.join(process.cwd(), "src/features/sync/sync-service.ts"), "utf8");
+
+    expect(source).toMatch(/sql\.begin\(async \(lockTx\)/);
+    expect(source).toMatch(/pg_try_advisory_xact_lock\(hashtext\('airbnb_operations_calendar_sync'\)\)/);
+    expect(source).not.toMatch(/pg_try_advisory_lock\(/);
+    expect(source).not.toMatch(/pg_advisory_unlock\(/);
+  });
 });
