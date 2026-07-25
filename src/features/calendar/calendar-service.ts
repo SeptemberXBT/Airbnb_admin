@@ -92,7 +92,11 @@ async function getCalendarDataWithSql(sql: postgres.Sql, userId: string, startDa
   });
   for (const row of local) add(row.property_id, {
     id: row.id, propertyId: row.property_id, listingId: row.listing_id, source: row.booking_id ? "website" : "local", kind: row.entry_type,
-    label: row.booking_id ? `Website booking · ${row.public_reference}` : row.entry_type === "direct_reservation" ? "Direct reservation" : "Blocked",
+    label: row.booking_id
+      ? `Website booking · ${row.public_reference}`
+      : row.entry_type === "direct_reservation"
+        ? row.private_booking_name?.trim() || "Direct reservation"
+        : "Blocked",
     startDate: row.start_date, endDate: row.end_date, privateBookingName: row.booking_id ? null : row.private_booking_name,
     paymentAmount: row.booking_id ? null : row.payment_amount,
     privateContact: row.booking_id ? null : row.private_contact, privateNote: row.booking_id ? null : row.private_note,

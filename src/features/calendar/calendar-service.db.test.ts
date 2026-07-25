@@ -10,6 +10,29 @@ describe("booking states in the master schedule", () => {
     await testSql`insert into auth.users (id, email) values (${USER_ID}, 'owner@example.test')`;
   });
 
+  it("uses the entered guest name as the label for a manual direct reservation", async () => {
+    const [property] = await testSql<{ id: string }[]>`
+      insert into public.properties (name) values ('Named Direct Suite') returning id
+    `;
+    await testSql`
+      insert into public.local_calendar_entries (
+        property_id, entry_type, start_date, end_date, private_booking_name, created_by
+      ) values (
+        ${property.id}, 'direct_reservation', '2026-08-14', '2026-08-16', 'Aarav Sharma', ${USER_ID}
+      )
+    `;
+
+    const [room] = await createCalendarService(testSql).getCalendarData(USER_ID, "2026-08-14", 3);
+
+    expect(room.entries).toHaveLength(1);
+    expect(room.entries[0]).toMatchObject({
+      source: "local",
+      kind: "direct_reservation",
+      label: "Aarav Sharma",
+      privateBookingName: "Aarav Sharma",
+    });
+  });
+
   it("shows only active holds and confirmed public references, with failure alerts but no guest PII", async () => {
     const [property] = await testSql<{ id: string }[]>`insert into public.properties (name) values ('Schedule Suite') returning id`;
     const [listing] = await testSql<{ id: string }[]>`
