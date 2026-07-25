@@ -70,6 +70,21 @@ test("maps matching property/listing identities and preserves pricing and bookin
   assert.equal(plan.actorMap["old-user"], "new-user");
 });
 
+test("accepts PostgreSQL date values returned as JavaScript Date objects", () => {
+  const input = fixture();
+  input.destination.bookings[0].checkin = new Date("2026-08-10T00:00:00.000Z");
+  input.destination.bookings[0].checkout = new Date("2026-08-12T00:00:00.000Z");
+
+  const plan = buildConsolidationPlan(input);
+
+  assert.deepEqual(
+    plan.inventoryNights
+      .filter((night) => night.booking_id === "booking-1")
+      .map((night) => night.stay_date),
+    ["2026-08-10", "2026-08-11"],
+  );
+});
+
 test("manual iCal mode preserves calendar history but clears every inbound secret and sync state", () => {
   const input = fixture();
   input.source.external_calendar_events.push({

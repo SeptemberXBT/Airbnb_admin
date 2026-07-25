@@ -19,9 +19,16 @@ function uniqueIdentityMap(records, label) {
   return result;
 }
 
+function stayDateText(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? "" : value.toISOString().slice(0, 10);
+  }
+  return String(value ?? "").slice(0, 10);
+}
+
 function expandStayDates(checkin, checkout) {
-  const start = new Date(`${String(checkin).slice(0, 10)}T00:00:00Z`);
-  const end = new Date(`${String(checkout).slice(0, 10)}T00:00:00Z`);
+  const start = new Date(`${stayDateText(checkin)}T00:00:00Z`);
+  const end = new Date(`${stayDateText(checkout)}T00:00:00Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
     throw new Error("INVALID_STAY_RANGE");
   }
