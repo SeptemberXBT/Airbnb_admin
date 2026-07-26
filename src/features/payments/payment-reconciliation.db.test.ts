@@ -6,8 +6,10 @@ import { orderReceipt } from "./order-recovery";
 import { createPaymentReconciliationService } from "./payment-reconciliation";
 import { RazorpayClientError, type RazorpayOrder, type RazorpayPayment } from "./razorpay-client";
 import { parseRazorpayWebhook, verifyRazorpayWebhookSignature } from "./razorpay-webhook";
+import { createBookingResumeService } from "@/features/bookings/booking-resume-service";
 
 const NOW = new Date("2026-07-21T10:15:00.000Z");
+const RESUME_ENCRYPTION_KEY = Buffer.alloc(32, 14).toString("base64url");
 let sequence = 0;
 let propertyId: string;
 let listingId: string;
@@ -280,6 +282,49 @@ describe("payment reconciliation", () => {
     const dismissed = await addHeldBooking();
     const dismissedService = createPaymentReconciliationService(testSql, { razorpay: fakeRazorpay([]), clock: () => NOW });
     expect(await dismissedService.reconcileBooking(dismissed.public_reference, "checkout_dismissed")).toMatchObject({ status: "expired" });
+    expect(await activeKinds()).toEqual([]);
+  });
+
+  it("keeps a no-payment hold intact for a resume check", async () => {
+    const booking = await addHeldBooking(
+      "held",
+      new Date("2026-07-21T10:20:00.000Z"),
+    );
+    const service = createPaymentReconciliationService(testSql, {
+      razorpay: fakeRazorpay([]),
+      clock: () => NOW,
+    });
+
+    await expect(
+      service.reconcileBooking(booking.public_reference, "resume"),
+    ).resolves.toMatchObject({ status: "held" });
+    expect(await activeKinds()).toHaveLength(2);
+  });
+
+  it("revokes the resume token after provider-verified dismissal releases inventory", async () => {
+    const booking = await addHeldBooking(
+      "held",
+      new Date("2026-07-21T10:20:00.000Z"),
+    );
+    const resumeTokens = createBookingResumeService(testSql, {
+      encryptionKey: RESUME_ENCRYPTION_KEY,
+      clock: () => NOW,
+    });
+    const token = await resumeTokens.issue(
+      booking.id,
+      new Date("2026-07-21T10:20:00.000Z"),
+    );
+    const service = createPaymentReconciliationService(testSql, {
+      razorpay: fakeRazorpay([]),
+      clock: () => NOW,
+    });
+
+    await expect(
+      service.reconcileBooking(booking.public_reference, "checkout_dismissed"),
+    ).resolves.toMatchObject({ status: "expired" });
+    await expect(
+      resumeTokens.authorize(booking.public_reference, token, NOW),
+    ).rejects.toMatchObject({ code: "BOOKING_RESUME_TOKEN_REVOKED" });
     expect(await activeKinds()).toEqual([]);
   });
 

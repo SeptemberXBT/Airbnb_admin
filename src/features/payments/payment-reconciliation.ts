@@ -22,7 +22,13 @@ type PaymentLookup = {
   fetchOrder(orderId: string): Promise<RazorpayOrder>;
   fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]>;
 };
-export type ReconciliationTrigger = "client_callback" | "checkout_dismissed" | "hold_expiry" | "webhook" | "worker";
+export type ReconciliationTrigger =
+  | "client_callback"
+  | "checkout_dismissed"
+  | "hold_expiry"
+  | "resume"
+  | "webhook"
+  | "worker";
 
 type BookingRow = {
   id: string;
@@ -124,6 +130,18 @@ export function createPaymentReconciliationService(
         status = 'retryable_failure', last_error_code = ${errorCode},
         next_attempt_at = now(), updated_at = now()
       where payment_jobs.status <> 'definitive_failure'
+    `;
+  }
+
+  async function revokeResumeToken(
+    tx: postgres.Sql,
+    bookingId: string,
+  ) {
+    const now = clock();
+    await tx`
+      update public.booking_resume_tokens
+      set revoked_at = coalesce(revoked_at, ${now}), updated_at = ${now}
+      where booking_id = ${bookingId}
     `;
   }
 
@@ -257,7 +275,10 @@ export function createPaymentReconciliationService(
       }
 
       if (state.kind === "captured") {
-        if (current.status === "confirmed") return publicState(current);
+        if (current.status === "confirmed") {
+          await revokeResumeToken(tx as unknown as postgres.Sql, current.id);
+          return publicState(current);
+        }
         const [activeHold] = await tx`
           select 1 from public.inventory_nights
           where booking_id = ${current.id} and source_kind = 'website_hold' and status = 'active'
@@ -279,8 +300,9 @@ export function createPaymentReconciliationService(
           `;
           if (job) await tx`
             insert into public.booking_events (property_id, booking_id, event_type, metadata)
-            values (${current.property_id}, ${current.id}, 'late_payment_after_expiry', ${tx.json({ paymentId: state.payment.id })})
+              values (${current.property_id}, ${current.id}, 'late_payment_after_expiry', ${tx.json({ paymentId: state.payment.id })})
           `;
+          await revokeResumeToken(tx as unknown as postgres.Sql, current.id);
           return {
             status: current.status,
             refundStatus: current.refund_status === "not_required" ? "pending" : current.refund_status,
@@ -367,10 +389,14 @@ export function createPaymentReconciliationService(
           deduplicationKey: `booking-confirmed:${current.id}:admin`,
           ...renderEmailTemplate("admin_new_booking", genericTemplateData),
         });
+        await revokeResumeToken(tx as unknown as postgres.Sql, current.id);
         return publicState(confirmed);
       }
 
-      if (current.status === "confirmed" || current.status === "cancelled") return publicState(current);
+      if (["confirmed", "cancelled", "expired", "payment_failed"].includes(current.status)) {
+        await revokeResumeToken(tx as unknown as postgres.Sql, current.id);
+        return publicState(current);
+      }
       if (state.kind === "authorized") {
         if (state.payment.amount !== current.amount_paise) throw new PaymentReconciliationError("PAYMENT_AMOUNT_MISMATCH");
         const [pending] = await tx<BookingRow[]>`
@@ -382,6 +408,10 @@ export function createPaymentReconciliationService(
             razorpay_payment_id, razorpay_key_id, refund_status, cancellation_reason
         `;
         return publicState(pending ?? current);
+      }
+
+      if (state.kind === "none" && trigger === "resume") {
+        return publicState(current);
       }
 
       const shouldRelease = state.kind === "failed"
@@ -401,6 +431,7 @@ export function createPaymentReconciliationService(
           insert into public.booking_events (property_id, booking_id, event_type, metadata)
           values (${current.property_id}, ${current.id}, ${status}, ${tx.json({ trigger })})
         `;
+        await revokeResumeToken(tx as unknown as postgres.Sql, current.id);
       }
       return publicState(releasedBooking ?? current);
     });
