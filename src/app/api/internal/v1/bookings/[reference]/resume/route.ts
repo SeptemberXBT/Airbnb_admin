@@ -40,7 +40,7 @@ export async function POST(
     scheduleBookingJobs();
     return NextResponse.json(
       request.headers.get("X-Noir-Api-Version") === "2"
-        && result.kind !== "resumable"
+        && !("kind" in result && result.kind === "resumable")
         ? await getPublicBookingStatus(parsedReference)
         : result,
     );
