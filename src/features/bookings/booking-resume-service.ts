@@ -55,29 +55,8 @@ export function createBookingResumeService(
   const clock = options.clock ?? (() => new Date());
   const cipher = createResumeTokenCipher(options.encryptionKey);
 
-  async function loadByReference(reference: string) {
-    const [row] = await sql<ResumeRow[]>`
-      select
-        t.booking_id,
-        b.property_id,
-        b.public_reference,
-        b.status,
-        b.hold_expires_at,
-        b.razorpay_order_id,
-        b.razorpay_key_id,
-        t.token_hash,
-        t.token_ciphertext,
-        t.expires_at,
-        t.revoked_at
-      from public.booking_resume_tokens t
-      join public.bookings b on b.id = t.booking_id
-      where b.public_reference = ${reference}
-    `;
-    return row ?? null;
-  }
-
-  async function reveal(bookingId: string) {
-    const [row] = await sql<{
+  async function revealFrom(query: postgres.Sql, bookingId: string) {
+    const [row] = await query<{
       token_ciphertext: string;
       expires_at: Date;
       revoked_at: Date | null;
@@ -107,8 +86,37 @@ export function createBookingResumeService(
     return cipher.decrypt(row.token_ciphertext);
   }
 
+  async function loadByReference(reference: string) {
+    const [row] = await sql<ResumeRow[]>`
+      select
+        t.booking_id,
+        b.property_id,
+        b.public_reference,
+        b.status,
+        b.hold_expires_at,
+        b.razorpay_order_id,
+        b.razorpay_key_id,
+        t.token_hash,
+        t.token_ciphertext,
+        t.expires_at,
+        t.revoked_at
+      from public.booking_resume_tokens t
+      join public.bookings b on b.id = t.booking_id
+      where b.public_reference = ${reference}
+    `;
+    return row ?? null;
+  }
+
+  async function reveal(bookingId: string) {
+    return revealFrom(sql, bookingId);
+  }
+
   return {
-    async issue(bookingId: string, expiresAt: Date) {
+    async issue(
+      bookingId: string,
+      expiresAt: Date,
+      query: postgres.Sql = sql,
+    ) {
       const createdAt = clock();
       if (expiresAt.getTime() <= createdAt.getTime()) {
         throw new BookingResumeServiceError(
@@ -117,7 +125,7 @@ export function createBookingResumeService(
         );
       }
       const token = cipher.generate();
-      await sql`
+      await query`
         insert into public.booking_resume_tokens (
           booking_id,
           token_hash,
@@ -135,7 +143,7 @@ export function createBookingResumeService(
         )
         on conflict (booking_id) do nothing
       `;
-      return reveal(bookingId);
+      return revealFrom(query, bookingId);
     },
 
     reveal,

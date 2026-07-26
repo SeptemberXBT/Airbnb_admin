@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
 import type { InventoryTransaction } from "@/features/inventory/inventory-types";
+import { createBookingResumeService } from "@/features/bookings/booking-resume-service";
 import type { RazorpayOrder } from "./razorpay-client";
 
 type RecoveryProvider = {
@@ -117,6 +118,7 @@ async function finishRecoveredOrder(
   orderId: string,
   publicKeyId: string,
   now: Date,
+  resumeTokens: ReturnType<typeof createBookingResumeService> | null,
 ) {
   const inventory = createInventoryService(sql);
   return inventory.withPropertyInventory(row.property_id, async (tx) => {
@@ -149,6 +151,12 @@ async function finishRecoveredOrder(
       returning razorpay_order_id
     `;
     if (!saved || saved.razorpay_order_id !== orderId) throw new Error("ORDER_RECOVERY_STATE_CHANGED");
+    if (!resumeTokens) throw new Error("BOOKING_RESUME_NOT_CONFIGURED");
+    await resumeTokens.issue(
+      row.booking_id,
+      new Date(row.hold_expires_at),
+      tx as unknown as postgres.Sql,
+    );
     if (state!.razorpay_key_id !== publicKeyId) {
       const changes = tx.json({ previousKeyId: state!.razorpay_key_id, currentKeyId: publicKeyId, source: "order_recovery" });
       await tx`
@@ -223,10 +231,20 @@ async function releaseExpiredOrderlessHold(
 export async function processOrderRecoveryJobs(
   sql: postgres.Sql,
   provider: RecoveryProvider,
-  options: { now?: Date; limit?: number } = {},
+  options: {
+    now?: Date;
+    limit?: number;
+    resumeEncryptionKey?: string;
+  } = {},
 ) {
   const now = options.now ?? new Date();
   const limit = options.limit ?? 25;
+  const resumeTokens = options.resumeEncryptionKey
+    ? createBookingResumeService(sql, {
+        encryptionKey: options.resumeEncryptionKey,
+        clock: () => now,
+      })
+    : null;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_ORDER_RECOVERY_LIMIT");
   const leaseToken = randomUUID();
   const rows = await sql<RecoveryRow[]>`
@@ -260,13 +278,29 @@ export async function processOrderRecoveryJobs(
             throw new Error("RAZORPAY_ACCOUNT_MISMATCH");
           }
         }
-        await finishRecoveredOrder(sql, row, leaseToken, row.razorpay_order_id, provider.publicKeyId, now);
+        await finishRecoveredOrder(
+          sql,
+          row,
+          leaseToken,
+          row.razorpay_order_id,
+          provider.publicKeyId,
+          now,
+          resumeTokens,
+        );
         processed += 1;
         continue;
       }
       const order = await provider.findOrderByReceipt(orderReceipt(row.public_reference));
       if (order) {
-        await finishRecoveredOrder(sql, row, leaseToken, validateOrder(order, row).id, provider.publicKeyId, now);
+        await finishRecoveredOrder(
+          sql,
+          row,
+          leaseToken,
+          validateOrder(order, row).id,
+          provider.publicKeyId,
+          now,
+          resumeTokens,
+        );
         processed += 1;
       } else if (new Date(row.hold_expires_at).getTime() <= now.getTime()) {
         await releaseExpiredOrderlessHold(sql, row, leaseToken, now);

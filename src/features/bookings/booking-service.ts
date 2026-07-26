@@ -12,6 +12,7 @@ import {
 } from "@/features/payments/razorpay-client";
 import { orderReceipt } from "@/features/payments/order-recovery";
 import { createAttemptService } from "./attempt-service";
+import { createBookingResumeService } from "./booking-resume-service";
 import {
   createAvailabilityRequestSchema,
   createBookingRequestSchema,
@@ -36,7 +37,7 @@ export class BookingServiceError extends Error {
   }
 }
 
-export type CheckoutResponse = {
+export type CheckoutResponseWithoutToken = {
   kind: "created";
   bookingReference: string;
   orderId: string;
@@ -44,6 +45,10 @@ export type CheckoutResponse = {
   currency: "INR";
   razorpayKeyId: string;
   holdExpiresAt: string;
+};
+
+export type CheckoutResponse = CheckoutResponseWithoutToken & {
+  resumeToken: string;
 };
 
 type StoredBooking = {
@@ -122,7 +127,11 @@ async function authoritativeQuote(
   };
 }
 
-function checkoutResponse(booking: StoredBooking, orderId: string, razorpayKeyId: string): CheckoutResponse {
+function checkoutResponse(
+  booking: StoredBooking,
+  orderId: string,
+  razorpayKeyId: string,
+): CheckoutResponseWithoutToken {
   return {
     kind: "created",
     bookingReference: booking.public_reference,
@@ -145,11 +154,25 @@ function validateExpectedOrder(order: RazorpayOrder, booking: StoredBooking) {
 
 export function createBookingService(
   sql: BookingSql,
-  dependencies: { razorpay?: RazorpayAdapter; clock?: () => Date },
+  dependencies: {
+    razorpay?: RazorpayAdapter;
+    clock?: () => Date;
+    resumeEncryptionKey?: string;
+  },
 ) {
   const clock = dependencies.clock ?? (() => new Date());
   const inventory = createInventoryService(sql);
   const attempts = createAttemptService(sql, { clock });
+
+  function requireResumeTokens() {
+    if (!dependencies.resumeEncryptionKey) {
+      throw new Error("BOOKING_RESUME_NOT_CONFIGURED");
+    }
+    return createBookingResumeService(sql, {
+      encryptionKey: dependencies.resumeEncryptionKey,
+      clock,
+    });
+  }
 
   function requireRazorpay() {
     if (!dependencies.razorpay) throw new Error("RAZORPAY_NOT_CONFIGURED");
@@ -237,23 +260,28 @@ export function createBookingService(
           values (${booking.property_id}, 'razorpay_account_rebound', 'website_booking', ${booking.id}, ${changes})
         `;
       }
-      const response = checkoutResponse(booking, orderId, razorpayKeyId);
+      const storedResponse = checkoutResponse(booking, orderId, razorpayKeyId);
+      const resumeToken = await requireResumeTokens().issue(
+        booking.id,
+        new Date(booking.hold_expires_at),
+        tx as unknown as postgres.Sql,
+      );
       await tx`
         update public.payment_jobs set status = 'succeeded', provider_id = ${orderId},
-          terminal_result = ${tx.json(response)}, lease_token = null, lease_expires_at = null,
+          terminal_result = ${tx.json(storedResponse)}, lease_token = null, lease_expires_at = null,
           last_error_code = null, updated_at = ${now}
         where booking_id = ${booking.id} and job_kind = 'order_recovery'
       `;
       const [attempt] = await tx<{ idempotency_key: string }[]>`
         update public.booking_attempts set status = 'succeeded', durable_step = 'razorpay_order_created',
-          terminal_http_status = 201, terminal_response = ${tx.json(response)},
+          terminal_http_status = 201, terminal_response = ${tx.json(storedResponse)},
           replay_until = ${new Date(now.getTime() + 30 * 60_000)}, lease_token = null,
           lease_expires_at = null, updated_at = ${now}
         where idempotency_key = ${idempotencyKey} and status = 'processing' and lease_token = ${leaseToken}
         returning idempotency_key
       `;
       if (!attempt) throw new Error("ATTEMPT_LEASE_LOST");
-      return response;
+      return { ...storedResponse, resumeToken };
     });
   }
 
@@ -372,7 +400,22 @@ export function createBookingService(
       if (acquisition.kind === "conflict") throw new BookingServiceError("IDEMPOTENCY_CONFLICT", 409);
       if (acquisition.kind === "expired") throw new BookingServiceError("IDEMPOTENCY_KEY_EXPIRED", 409);
       if (acquisition.kind === "replay") {
-        if (acquisition.httpStatus >= 200 && acquisition.httpStatus < 300) return acquisition.response as CheckoutResponse;
+        if (acquisition.httpStatus >= 200 && acquisition.httpStatus < 300) {
+          const storedResponse = acquisition.response as CheckoutResponseWithoutToken;
+          const [booking] = await sql<{ id: string; hold_expires_at: Date }[]>`
+            select id, hold_expires_at
+            from public.bookings
+            where public_reference = ${storedResponse.bookingReference}
+          `;
+          if (!booking) {
+            throw new BookingServiceError("BOOKING_NO_LONGER_ACTIVE", 409);
+          }
+          const resumeToken = await requireResumeTokens().issue(
+            booking.id,
+            new Date(booking.hold_expires_at),
+          );
+          return { ...storedResponse, resumeToken };
+        }
         const code = (acquisition.response as { error?: string } | null)?.error ?? "BOOKING_FAILED";
         throw new BookingServiceError(code, acquisition.httpStatus);
       }
@@ -451,7 +494,7 @@ export function createBookingService(
         }
       }
 
-      const orderAttached = await inventory.withPropertyInventory(booking.property_id, async (tx) => {
+      const resumeToken = await inventory.withPropertyInventory(booking.property_id, async (tx) => {
         const [active] = await tx`
           select 1 from public.bookings b
           where b.id = ${booking.id} and b.status in ('processing', 'held')
@@ -463,7 +506,7 @@ export function createBookingService(
             )
           for update of b
         `;
-        if (!active) return false;
+        if (!active) return null;
         const [saved] = await tx`
           update public.bookings set razorpay_order_id = ${providerOrder.id},
             razorpay_key_id = ${razorpay.publicKeyId}, updated_at = ${clock()}
@@ -490,18 +533,22 @@ export function createBookingService(
             lease_token = null, lease_expires_at = null, last_error_code = null, updated_at = ${clock()}
           where booking_id = ${booking.id} and job_kind = 'order_recovery'
         `;
-        return true;
+        return requireResumeTokens().issue(
+          booking.id,
+          new Date(booking.hold_expires_at),
+          tx as unknown as postgres.Sql,
+        );
       });
-      if (!orderAttached) {
+      if (!resumeToken) {
         await markOrderRecoveryInactive(booking, providerOrder.id);
         return terminalFailure(idempotencyKey, acquisition.leaseToken, "BOOKING_NO_LONGER_ACTIVE", 409);
       }
       booking = { ...booking, razorpay_order_id: providerOrder.id, razorpay_key_id: razorpay.publicKeyId };
-      const response = checkoutResponse(booking, providerOrder.id, razorpay.publicKeyId);
+      const storedResponse = checkoutResponse(booking, providerOrder.id, razorpay.publicKeyId);
       await attempts.completeTerminal(idempotencyKey, acquisition.leaseToken, {
-        status: "succeeded", httpStatus: 201, response,
+        status: "succeeded", httpStatus: 201, response: storedResponse,
       });
-      return response;
+      return { ...storedResponse, resumeToken };
     },
 
     async getPublicBookingStatus(reference: string) {
@@ -541,8 +588,11 @@ function configuredService() {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!keyId || !keySecret) throw new Error("RAZORPAY_NOT_CONFIGURED");
+  const resumeEncryptionKey = process.env.BOOKING_RESUME_ENCRYPTION_KEY;
+  if (!resumeEncryptionKey) throw new Error("BOOKING_RESUME_NOT_CONFIGURED");
   return createBookingService(getDb(), {
     razorpay: createRazorpayClient({ keyId, keySecret }),
+    resumeEncryptionKey,
   });
 }
 

@@ -194,7 +194,11 @@ export function createConfiguredBookingJobRunner() {
   const attempts = createAttemptService(sql);
 
   return createBookingJobRunner({
-    orderRecovery: async ({ now, limit }) => processOrderRecoveryJobs(sql, razorpay, { now, limit }),
+    orderRecovery: async ({ now, limit }) => processOrderRecoveryJobs(sql, razorpay, {
+      now,
+      limit,
+      resumeEncryptionKey: requiredWorkerEnvironment("BOOKING_RESUME_ENCRYPTION_KEY"),
+    }),
     expiredHolds: async ({ now, limit }) => processExpiredHolds(sql, reconciliation, { now, limit }),
     paymentReconciliation: async (context) => processPaymentReconciliationJobs(sql, reconciliation, context),
     refunds: async ({ limit }) => {

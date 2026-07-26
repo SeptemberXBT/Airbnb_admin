@@ -4,6 +4,7 @@ import { claimStayNights, createInventoryService, releaseSourceNights } from "@/
 import { processOrderRecoveryJobs } from "./order-recovery";
 
 const NOW = new Date("2026-07-21T10:15:00.000Z");
+const RESUME_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString("base64url");
 
 async function seed(expiresAt: Date) {
   const [property] = await testSql<{ id: string }[]>`insert into public.properties (name) values ('Recovery Suite') returning id`;
@@ -47,12 +48,18 @@ describe("Razorpay order recovery worker", () => {
       })),
     };
 
-    expect(await processOrderRecoveryJobs(testSql, provider, { now: NOW, limit: 10 })).toEqual({ processed: 1, failed: 0 });
+    expect(await processOrderRecoveryJobs(testSql, provider, {
+      now: NOW,
+      limit: 10,
+      resumeEncryptionKey: RESUME_ENCRYPTION_KEY,
+    })).toEqual({ processed: 1, failed: 0 });
     await expect(testSql`select razorpay_order_id from public.bookings`).resolves.toEqual([{ razorpay_order_id: "order_recovered" }]);
     await expect(testSql`select status, provider_id from public.payment_jobs`).resolves.toEqual([{ status: "succeeded", provider_id: "order_recovered" }]);
     const [attempt] = await testSql<{ status: string; terminal_response: { orderId: string } }[]>`select status, terminal_response from public.booking_attempts`;
     expect(attempt.status).toBe("succeeded");
     expect(attempt.terminal_response.orderId).toBe("order_recovered");
+    expect(attempt.terminal_response).not.toHaveProperty("resumeToken");
+    expect(await testSql`select booking_id from public.booking_resume_tokens`).toHaveLength(1);
   });
 
   it("releases an expired hold only after a successful receipt lookup proves no order exists", async () => {

@@ -7,6 +7,7 @@ import { createInventoryService, releaseSourceNights } from "@/features/inventor
 
 const USER_ID = "10000000-0000-4000-8000-000000000001";
 const NOW = new Date("2026-07-21T10:00:00.000Z");
+const RESUME_ENCRYPTION_KEY = Buffer.alloc(32, 12).toString("base64url");
 const request = {
   publicRoomSlug: "shade-of-love" as const,
   checkin: "2026-08-14",
@@ -61,7 +62,7 @@ describe("authoritative website booking holds", () => {
 
   it("quotes and snapshots authoritative override/weekend/weekday prices into a ten-minute hold", async () => {
     const razorpay = fakeRazorpay();
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const quote = await service.quoteAvailability({
       publicRoomSlug: request.publicRoomSlug,
       checkin: request.checkin,
@@ -108,7 +109,7 @@ describe("authoritative website booking holds", () => {
   });
 
   it("stores the premium checkout identity, country, and special requests", async () => {
-    const service = createBookingService(testSql, { razorpay: fakeRazorpay(), clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay: fakeRazorpay(), clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     await service.createBooking({
       ...request,
       guestName: undefined,
@@ -140,7 +141,7 @@ describe("authoritative website booking holds", () => {
 
   it("serializes simultaneous attempts so only one hold and one Razorpay order wins", async () => {
     const razorpay = fakeRazorpay();
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const results = await Promise.allSettled([
       service.createBooking(request, randomUUID()),
       service.createBooking(request, randomUUID()),
@@ -154,19 +155,26 @@ describe("authoritative website booking holds", () => {
 
   it("replays the same completed attempt without another hold or order", async () => {
     const razorpay = fakeRazorpay();
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const key = randomUUID();
     const first = await service.createBooking(request, key);
     const second = await service.createBooking(request, key);
     expect(second).toEqual(first);
+    expect(first.resumeToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second.resumeToken).toBe(first.resumeToken);
     expect(razorpay.createOrder).toHaveBeenCalledOnce();
     expect(await testSql`select id from public.bookings`).toHaveLength(1);
+    expect(await testSql`select booking_id from public.booking_resume_tokens`).toHaveLength(1);
+    const [attempt] = await testSql<{ terminal_response: Record<string, unknown> }[]>`
+      select terminal_response from public.booking_attempts
+    `;
+    expect(attempt.terminal_response).not.toHaveProperty("resumeToken");
   });
 
   it("releases immediately after a definitive order rejection", async () => {
     const razorpay = fakeRazorpay();
     razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("definitive", "RAZORPAY_REJECTED"));
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     await expect(service.createBooking(request, randomUUID())).rejects.toMatchObject({
       code: "PAYMENT_ORDER_FAILED",
     });
@@ -178,7 +186,7 @@ describe("authoritative website booking holds", () => {
   it("retains an ambiguous hold and recovers the provider order by receipt on retry", async () => {
     const razorpay = fakeRazorpay();
     razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"));
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const key = randomUUID();
     await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
     expect(await testSql`select id from public.inventory_nights where status = 'active'`).toHaveLength(3);
@@ -200,7 +208,7 @@ describe("authoritative website booking holds", () => {
     razorpay.createOrder
       .mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"))
       .mockRejectedValueOnce(new RazorpayClientError("definitive", "RAZORPAY_REJECTED"));
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const key = randomUUID();
     await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
 
@@ -213,7 +221,7 @@ describe("authoritative website booking holds", () => {
   it("does not resume Razorpay order creation after Airbnb has cancelled the ambiguous hold", async () => {
     const razorpay = fakeRazorpay();
     razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"));
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const key = randomUUID();
     await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
     const [booking] = await testSql<{ id: string }[]>`select id from public.bookings`;
@@ -233,7 +241,7 @@ describe("authoritative website booking holds", () => {
   it("does not finalize an already-attached order after Airbnb has cancelled its hold", async () => {
     const razorpay = fakeRazorpay();
     razorpay.createOrder.mockRejectedValueOnce(new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"));
-    const service = createBookingService(testSql, { razorpay, clock: () => NOW });
+    const service = createBookingService(testSql, { razorpay, clock: () => NOW, resumeEncryptionKey: RESUME_ENCRYPTION_KEY });
     const key = randomUUID();
     await expect(service.createBooking(request, key)).rejects.toMatchObject({ code: "PAYMENT_ORDER_RETRYABLE" });
     const [booking] = await testSql<{ id: string }[]>`select id from public.bookings`;
