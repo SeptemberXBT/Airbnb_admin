@@ -166,6 +166,23 @@ describe("initial database migration", () => {
     expect(down).toMatch(/inbound_ical_url_encrypted set not null/i);
   });
 
+  it("stores encrypted booking resume tokens behind row security", async () => {
+    const [up, down] = await Promise.all([
+      readFile(path.join(process.cwd(), "supabase/migrations/0010_booking_resume_tokens.sql"), "utf8"),
+      readFile(path.join(process.cwd(), "supabase/migrations/0010_booking_resume_tokens.down.sql"), "utf8"),
+    ]);
+
+    expect(up).toMatch(/create table public\.booking_resume_tokens/i);
+    expect(up).toMatch(/booking_id uuid primary key references public\.bookings\(id\) on delete cascade/i);
+    expect(up).toMatch(/token_hash text not null unique/i);
+    expect(up).toMatch(/token_ciphertext text not null/i);
+    expect(up).toMatch(/create index booking_resume_tokens_expiry_idx[\s\S]*where revoked_at is null/i);
+    expect(up).toMatch(/alter table public\.booking_resume_tokens enable row level security/i);
+    expect(up).toMatch(/revoke all on public\.booking_resume_tokens from anon/i);
+    expect(up).toMatch(/revoke all on public\.booking_resume_tokens from authenticated/i);
+    expect(down.trim()).toBe("drop table if exists public.booking_resume_tokens;");
+  });
+
   it("defines the one-minute Supabase booking worker without committing secrets", async () => {
     const up = await readFile(path.join(process.cwd(), "ops/setup-supabase-booking-worker.sql"), "utf8");
     expect(up).toMatch(/create extension if not exists pg_cron/i);
