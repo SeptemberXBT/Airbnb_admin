@@ -2,11 +2,15 @@ import { formatInTimeZone } from "date-fns-tz";
 import { z } from "zod";
 import { publicRoomSlugSchema, stayDateSchema } from "@/features/pricing/pricing-schema";
 
-const stayFields = {
-  publicRoomSlug: publicRoomSlugSchema,
+const batchStayFields = {
   checkin: stayDateSchema,
   checkout: stayDateSchema,
   guests: z.number().int().min(1).max(20),
+};
+
+const stayFields = {
+  publicRoomSlug: publicRoomSlugSchema,
+  ...batchStayFields,
 };
 
 export const MAX_PUBLIC_STAY_NIGHTS = 30;
@@ -47,6 +51,10 @@ export function createAvailabilityRequestSchema(todayDate = currentIndiaStayDate
   return validateStay(stayFields, todayDate);
 }
 
+export function createAvailabilityBatchRequestSchema(todayDate = currentIndiaStayDate()) {
+  return validateStay(batchStayFields, todayDate);
+}
+
 export function createBookingRequestSchema(todayDate = currentIndiaStayDate()) {
   return validateStay({
     ...stayFields,
@@ -70,7 +78,10 @@ export function createBookingRequestSchema(todayDate = currentIndiaStayDate()) {
 }
 
 export const availabilityRequestSchema = createAvailabilityRequestSchema();
+export const availabilityBatchRequestSchema = createAvailabilityBatchRequestSchema();
 export const bookingRequestSchema = createBookingRequestSchema();
 export type AvailabilityRequest = z.infer<ReturnType<typeof createAvailabilityRequestSchema>>;
+export type AvailabilityBatchRequest =
+  z.infer<ReturnType<typeof createAvailabilityBatchRequestSchema>>;
 export type CreateBookingRequest = z.input<ReturnType<typeof createBookingRequestSchema>>;
 export type ValidatedCreateBookingRequest = z.output<ReturnType<typeof createBookingRequestSchema>>;

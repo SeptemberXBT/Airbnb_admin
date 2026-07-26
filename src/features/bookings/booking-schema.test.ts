@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createAvailabilityRequestSchema, createBookingRequestSchema } from "./booking-schema";
+import {
+  createAvailabilityBatchRequestSchema,
+  createAvailabilityRequestSchema,
+  createBookingRequestSchema,
+} from "./booking-schema";
 
 const today = "2026-07-21";
 const stay = {
@@ -10,6 +14,35 @@ const stay = {
 };
 
 describe("public booking schemas", () => {
+  it("accepts a strict room-independent batch availability request", () => {
+    const schema = createAvailabilityBatchRequestSchema(today);
+    const valid = {
+      checkin: "2026-08-14",
+      checkout: "2026-08-17",
+      guests: 2,
+    };
+
+    expect(schema.parse(valid)).toEqual(valid);
+    for (const field of ["publicRoomSlug", "amountPaise", "price"]) {
+      expect(schema.safeParse({ ...valid, [field]: field === "publicRoomSlug" ? "shade-of-love" : 1 }).success)
+        .toBe(false);
+    }
+    expect(schema.safeParse({ ...valid, unknown: true }).success).toBe(false);
+  });
+
+  it("applies the public stay bounds to batch availability", () => {
+    const schema = createAvailabilityBatchRequestSchema(today);
+    const valid = { checkin: "2026-08-14", checkout: "2026-08-17", guests: 2 };
+
+    expect(schema.safeParse({ ...valid, checkin: "2026-07-20" }).success).toBe(false);
+    expect(schema.safeParse({ ...valid, checkout: valid.checkin }).success).toBe(false);
+    expect(schema.safeParse({ ...valid, checkout: "2026-09-14" }).success).toBe(false);
+    expect(schema.safeParse({ ...valid, checkin: "2027-07-22", checkout: "2027-07-23" }).success)
+      .toBe(false);
+    expect(schema.safeParse({ ...valid, guests: 0 }).success).toBe(false);
+    expect(schema.safeParse({ ...valid, guests: 21 }).success).toBe(false);
+  });
+
   it("accepts strict availability and guest booking input", () => {
     expect(createAvailabilityRequestSchema(today).parse(stay)).toEqual(stay);
     expect(createBookingRequestSchema(today).parse({
