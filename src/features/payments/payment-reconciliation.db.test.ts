@@ -1,21 +1,44 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb, testSql } from "@/test/db-test-client";
 import { claimStayNights, createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
+import { orderReceipt } from "./order-recovery";
 import { createPaymentReconciliationService } from "./payment-reconciliation";
-import { RazorpayClientError, type RazorpayPayment } from "./razorpay-client";
+import { RazorpayClientError, type RazorpayOrder, type RazorpayPayment } from "./razorpay-client";
+import { parseRazorpayWebhook, verifyRazorpayWebhookSignature } from "./razorpay-webhook";
 
 const NOW = new Date("2026-07-21T10:15:00.000Z");
 let sequence = 0;
 let propertyId: string;
 let listingId: string;
 
-function fakeRazorpay(payments: RazorpayPayment[]) {
-  return { publicKeyId: "rzp_test_reconciliation", fetchOrderPayments: vi.fn(async () => payments) };
+function referenceForOrder(orderId: string) {
+  const sequenceNumber = Number(orderId.match(/(\d+)$/)?.[1]);
+  if (!Number.isSafeInteger(sequenceNumber) || sequenceNumber < 1) throw new Error("INVALID_TEST_ORDER");
+  return `NH-PAYMENTTEST${String(sequenceNumber).padStart(3, "0")}`;
+}
+
+function fakeRazorpay(
+  payments: RazorpayPayment[],
+  orderOverrides: Partial<RazorpayOrder> = {},
+) {
+  return {
+    publicKeyId: "rzp_test_reconciliation",
+    fetchOrder: vi.fn(async (orderId: string): Promise<RazorpayOrder> => ({
+      id: orderId,
+      amount: 1200000,
+      currency: "INR",
+      receipt: orderReceipt(referenceForOrder(orderId)),
+      status: "paid",
+      ...orderOverrides,
+    })),
+    fetchOrderPayments: vi.fn(async () => payments),
+  };
 }
 
 async function addHeldBooking(status = "held", expiresAt = new Date("2026-07-21T10:10:00.000Z")) {
   sequence += 1;
-  const [booking] = await testSql<{ id: string; public_reference: string }[]>`
+  const [booking] = await testSql<{ id: string; public_reference: string; razorpay_order_id: string }[]>`
     insert into public.bookings (
       public_reference, property_id, guest_name, guest_email, guest_phone, guest_count,
       checkin, checkout, status, hold_expires_at, amount_paise, razorpay_order_id
@@ -23,7 +46,13 @@ async function addHeldBooking(status = "held", expiresAt = new Date("2026-07-21T
       ${`NH-PAYMENTTEST${String(sequence).padStart(3, "0")}`}, ${propertyId}, 'Payment Guest',
       'payment@example.test', '+919999999999', 2, '2026-08-14', '2026-08-16',
       ${status}, ${expiresAt}, 1200000, ${`order_payment_${sequence}`}
-    ) returning id, public_reference
+    ) returning id, public_reference, razorpay_order_id
+  `;
+  await testSql`
+    insert into public.booking_night_prices (booking_id, stay_date, price_paise, price_source)
+    values
+      (${booking.id}, '2026-08-14', 600000, 'weekday'),
+      (${booking.id}, '2026-08-15', 600000, 'weekday')
   `;
   await createInventoryService(testSql).withPropertyInventory(propertyId, (tx) => claimStayNights(tx, {
     propertyId,
@@ -135,6 +164,92 @@ describe("payment reconciliation", () => {
     expect({ events, entries }).toEqual({ events: 2, entries: 1 });
   });
 
+  it("refuses a correctly signed captured webhook when the booking amount disagrees with immutable nightly prices", async () => {
+    const booking = await addHeldBooking();
+    await testSql`update public.bookings set amount_paise = 1 where id = ${booking.id}`;
+    const razorpay = fakeRazorpay(
+      [{ id: "pay_integrity_attack", status: "captured", amount: 1 }],
+      { amount: 1, receipt: orderReceipt(booking.public_reference) },
+    );
+    const service = createPaymentReconciliationService(testSql, { razorpay, clock: () => NOW });
+    const secret = "signed_integrity_webhook_secret";
+    const rawBody = JSON.stringify({
+      event: "payment.captured",
+      payload: {
+        payment: {
+          entity: {
+            id: "pay_integrity_attack",
+            order_id: booking.razorpay_order_id,
+            status: "captured",
+            amount: 1,
+          },
+        },
+      },
+    });
+    const signature = createHmac("sha256", secret).update(rawBody).digest("hex");
+    expect(verifyRazorpayWebhookSignature(rawBody, signature, secret)).toBe(true);
+    const parsed = parseRazorpayWebhook(rawBody);
+
+    await expect(service.processWebhookEvent("event-integrity-1", parsed, rawBody)).resolves.toMatchObject({
+      duplicate: false,
+      integrityFailure: true,
+    });
+    await testSql`
+      update public.booking_night_prices set price_paise = 500000
+      where booking_id = ${booking.id} and stay_date = '2026-08-15'
+    `;
+    await expect(service.processWebhookEvent("event-integrity-2", parsed, rawBody)).resolves.toMatchObject({
+      duplicate: false,
+      integrityFailure: true,
+    });
+
+    expect(await bookingState(booking.id)).toMatchObject({
+      status: "held",
+      razorpay_payment_id: null,
+    });
+    expect(razorpay.fetchOrder).toHaveBeenCalledTimes(2);
+    expect(razorpay.fetchOrderPayments).toHaveBeenCalledTimes(2);
+    expect(razorpay.fetchOrder).toHaveBeenNthCalledWith(1, booking.razorpay_order_id);
+    expect(razorpay.fetchOrder).toHaveBeenNthCalledWith(2, booking.razorpay_order_id);
+    const integrityEvents = await testSql<{ event_type: string; metadata: Record<string, unknown> }[]>`
+      select event_type, metadata from public.booking_events
+      where booking_id = ${booking.id} and event_type = 'AMOUNT_INTEGRITY_FAILURE'
+      order by id
+    `;
+    expect(integrityEvents).toHaveLength(2);
+    expect(integrityEvents[0]?.metadata).toMatchObject({
+      paymentAmountPaise: 1,
+      orderAmountPaise: 1,
+      bookingAmountPaise: 1,
+      nightlyTotalPaise: 1200000,
+    });
+    expect(integrityEvents[1]?.metadata).toMatchObject({
+      paymentAmountPaise: 1,
+      orderAmountPaise: 1,
+      bookingAmountPaise: 1,
+      nightlyTotalPaise: 1100000,
+    });
+    expect(await testSql`
+      select id from public.notification_outbox
+      where booking_id = ${booking.id} and template_key = 'amount_integrity_failure'
+    `).toHaveLength(1);
+    expect(await testSql`
+      select status, error_code from public.payment_events
+      where razorpay_event_id in ('event-integrity-1', 'event-integrity-2')
+      order by razorpay_event_id
+    `).toEqual([
+      { status: "ignored", error_code: "amount_integrity_failure" },
+      { status: "ignored", error_code: "amount_integrity_failure" },
+    ]);
+    expect(await testSql`
+      select status, last_error_code from public.payment_jobs
+      where booking_id = ${booking.id} and job_kind = 'payment_reconciliation'
+    `).toEqual([{
+      status: "definitive_failure",
+      last_error_code: "amount_integrity_failure",
+    }]);
+  });
+
   it("retains authorized inventory as payment pending without confirming", async () => {
     const booking = await addHeldBooking();
     const service = createPaymentReconciliationService(testSql, {
@@ -160,7 +275,11 @@ describe("payment reconciliation", () => {
 
   it("retains the hold on provider ambiguity", async () => {
     const booking = await addHeldBooking();
-    const razorpay = { publicKeyId: "rzp_test_reconciliation", fetchOrderPayments: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }) };
+    const razorpay = {
+      publicKeyId: "rzp_test_reconciliation",
+      fetchOrder: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }),
+      fetchOrderPayments: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }),
+    };
     const service = createPaymentReconciliationService(testSql, { razorpay, clock: () => NOW });
     await expect(service.reconcileBooking(booking.public_reference, "hold_expiry")).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_RETRYABLE" });
     expect(await bookingState(booking.id)).toMatchObject({ status: "held" });

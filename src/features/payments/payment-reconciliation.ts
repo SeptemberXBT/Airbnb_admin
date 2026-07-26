@@ -3,15 +3,25 @@ import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import { getDb } from "@/lib/db/client";
 import { createInventoryService, releaseSourceNights } from "@/features/inventory/inventory-service";
-import { createRazorpayClient, RazorpayClientError, type RazorpayPayment } from "./razorpay-client";
+import {
+  createRazorpayClient,
+  RazorpayClientError,
+  type RazorpayOrder,
+  type RazorpayPayment,
+} from "./razorpay-client";
 import type { ParsedRazorpayWebhook } from "./razorpay-webhook";
 import { enqueueNotification } from "@/features/email/outbox-service";
 import { renderEmailTemplate } from "@/features/email/templates";
 import { renderBookingConfirmationEmail } from "@/features/email/booking-confirmation-template";
 import { resolveGuestSupportEmail } from "@/features/email/email-config";
+import { orderReceipt } from "./order-recovery";
 
 type PaymentSql = postgres.Sql;
-type PaymentLookup = { publicKeyId: string; fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]> };
+type PaymentLookup = {
+  publicKeyId: string;
+  fetchOrder(orderId: string): Promise<RazorpayOrder>;
+  fetchOrderPayments(orderId: string): Promise<RazorpayPayment[]>;
+};
 export type ReconciliationTrigger = "client_callback" | "checkout_dismissed" | "hold_expiry" | "webhook" | "worker";
 
 type BookingRow = {
@@ -31,6 +41,17 @@ type BookingRow = {
   razorpay_key_id: string | null;
   refund_status: string;
   cancellation_reason: string | null;
+};
+
+type CapturedPaymentEvidence = {
+  order: RazorpayOrder;
+  webhookPaymentAmountPaise: number;
+  providerPaymentAmountPaise: number;
+};
+
+type AmountIntegrityFailure = {
+  integrityFailure: true;
+  bookingId: string;
 };
 
 export class PaymentReconciliationError extends Error {
@@ -54,6 +75,16 @@ function choosePaymentState(payments: RazorpayPayment[]) {
   }
   if (payments.length === 0) return { kind: "none" as const, payment: null };
   return { kind: "unknown" as const, payment: null };
+}
+
+function isPositiveSafeInteger(value: number) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isAmountIntegrityFailure(
+  value: { status: string; refundStatus: string } | AmountIntegrityFailure,
+): value is AmountIntegrityFailure {
+  return "integrityFailure" in value;
 }
 
 export function createPaymentReconciliationService(
@@ -99,6 +130,7 @@ export function createPaymentReconciliationService(
     booking: BookingRow,
     state: ReturnType<typeof choosePaymentState>,
     trigger: ReconciliationTrigger,
+    capturedEvidence: CapturedPaymentEvidence | null = null,
   ) {
     return inventory.withPropertyInventory(booking.property_id, async (tx) => {
       const [current] = await tx<BookingRow[]>`
@@ -113,6 +145,95 @@ export function createPaymentReconciliationService(
         && current.razorpay_key_id?.startsWith("rzp_test_")) {
         return publicState(current);
       }
+
+      if (state.kind === "captured") {
+        if (!capturedEvidence) throw new PaymentReconciliationError("PAYMENT_INTEGRITY_EVIDENCE_MISSING");
+        const [nightly] = await tx<{ night_count: number; total_paise: string }[]>`
+          select count(*)::int as night_count,
+            coalesce(sum(price_paise), 0)::bigint::text as total_paise
+          from public.booking_night_prices
+          where booking_id = ${current.id}
+        `;
+        const nightlyTotalPaise = Number(nightly?.total_paise ?? Number.NaN);
+        const values = [
+          capturedEvidence.webhookPaymentAmountPaise,
+          capturedEvidence.order.amount,
+          current.amount_paise,
+          nightlyTotalPaise,
+        ];
+        const integrityReasons = [
+          ...(!values.every(isPositiveSafeInteger) ? ["amount_not_positive_integer"] : []),
+          ...(new Set(values).size !== 1 ? ["amount_mismatch"] : []),
+          ...(!isPositiveSafeInteger(capturedEvidence.providerPaymentAmountPaise)
+            || capturedEvidence.providerPaymentAmountPaise !== capturedEvidence.webhookPaymentAmountPaise
+            ? ["provider_payment_amount_mismatch"]
+            : []),
+          ...(capturedEvidence.order.id !== current.razorpay_order_id ? ["order_id_mismatch"] : []),
+          ...(capturedEvidence.order.currency !== "INR" ? ["order_currency_mismatch"] : []),
+          ...(capturedEvidence.order.receipt !== orderReceipt(current.public_reference) ? ["order_receipt_mismatch"] : []),
+          ...(!nightly || nightly.night_count < 1 ? ["nightly_prices_missing"] : []),
+        ];
+        if (integrityReasons.length > 0) {
+          const metadata = {
+            trigger,
+            reasons: integrityReasons,
+            paymentId: state.payment.id,
+            orderId: current.razorpay_order_id,
+            paymentAmountPaise: capturedEvidence.webhookPaymentAmountPaise,
+            providerPaymentAmountPaise: capturedEvidence.providerPaymentAmountPaise,
+            orderAmountPaise: capturedEvidence.order.amount,
+            bookingAmountPaise: current.amount_paise,
+            nightlyTotalPaise,
+            orderCurrency: capturedEvidence.order.currency,
+            orderReceipt: capturedEvidence.order.receipt,
+          };
+          await tx`
+            insert into public.booking_events (property_id, booking_id, event_type, metadata)
+            values (${current.property_id}, ${current.id}, 'AMOUNT_INTEGRITY_FAILURE', ${tx.json(metadata)})
+          `;
+          await tx`
+            insert into public.audit_log (property_id, action, entity_type, entity_id, changes)
+            values (
+              ${current.property_id}, 'amount_integrity_failure', 'website_booking',
+              ${current.id}, ${tx.json(metadata)}
+            )
+          `;
+          await tx`
+            insert into public.payment_jobs (
+              booking_id, job_kind, idempotency_identity, status, last_error_code
+            ) values (
+              ${current.id}, 'payment_reconciliation', ${`reconcile:${current.id}`},
+              'definitive_failure', 'amount_integrity_failure'
+            ) on conflict (idempotency_identity) do update set
+              status = 'definitive_failure', last_error_code = 'amount_integrity_failure',
+              lease_token = null, lease_expires_at = null, updated_at = ${clock()}
+          `;
+          const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+          if (adminEmail) {
+            const [property] = await tx<{ name: string }[]>`
+              select name from public.properties where id = ${current.property_id}
+            `;
+            if (!property) throw new PaymentReconciliationError("PROPERTY_NOT_FOUND");
+            await enqueueNotification(tx, {
+              bookingId: current.id,
+              recipientKind: "admin",
+              recipientEmail: adminEmail,
+              templateKey: "amount_integrity_failure",
+              deduplicationKey: `amount-integrity:${current.id}:${state.payment.id}:admin`,
+              ...renderEmailTemplate("amount_integrity_failure", {
+                guestName: current.guest_name,
+                propertyName: property.name,
+                bookingReference: current.public_reference,
+                checkin: current.checkin,
+                checkout: current.checkout,
+                amountPaise: current.amount_paise,
+              }),
+            });
+          }
+          return { integrityFailure: true as const, bookingId: current.id };
+        }
+      }
+
       const previousKeyId = current.razorpay_key_id;
       const [accountBound] = await tx<{ razorpay_key_id: string }[]>`
         update public.bookings set razorpay_key_id = ${dependencies.razorpay.publicKeyId},
@@ -135,9 +256,6 @@ export function createPaymentReconciliationService(
       }
 
       if (state.kind === "captured") {
-        if (state.payment.amount !== current.amount_paise) {
-          throw new PaymentReconciliationError("PAYMENT_AMOUNT_MISMATCH");
-        }
         if (current.status === "confirmed") return publicState(current);
         const [activeHold] = await tx`
           select 1 from public.inventory_nights
@@ -299,23 +417,61 @@ export function createPaymentReconciliationService(
           : "provider_unavailable");
         throw new PaymentReconciliationError("PAYMENT_RECONCILIATION_RETRYABLE");
       }
-      return applyState(booking, choosePaymentState(payments), trigger);
+      const state = choosePaymentState(payments);
+      let capturedEvidence: CapturedPaymentEvidence | null = null;
+      if (state.kind === "captured") {
+        let order: RazorpayOrder;
+        try {
+          order = await dependencies.razorpay.fetchOrder(booking.razorpay_order_id);
+        } catch (error) {
+          await recordRetryableJob(booking.id, error instanceof RazorpayClientError && error.kind === "definitive"
+            ? "razorpay_account_mismatch"
+            : "provider_unavailable");
+          throw new PaymentReconciliationError("PAYMENT_RECONCILIATION_RETRYABLE");
+        }
+        capturedEvidence = {
+          order,
+          webhookPaymentAmountPaise: state.payment.amount,
+          providerPaymentAmountPaise: state.payment.amount,
+        };
+      }
+      const result = await applyState(booking, state, trigger, capturedEvidence);
+      if (isAmountIntegrityFailure(result)) {
+        throw new PaymentReconciliationError("AMOUNT_INTEGRITY_FAILURE", 409);
+      }
+      return result;
     },
 
     async applyVerifiedPayment(orderId: string, payment: RazorpayPayment, trigger: ReconciliationTrigger = "webhook") {
       const booking = await bookingByOrder(orderId);
-      if (booking.razorpay_key_id !== dependencies.razorpay.publicKeyId) {
-        let payments: RazorpayPayment[];
-        try {
-          payments = await dependencies.razorpay.fetchOrderPayments(orderId);
-        } catch {
-          throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
-        }
-        if (!payments.some((candidate) => candidate.id === payment.id && candidate.amount === payment.amount)) {
-          throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
-        }
+      let order: RazorpayOrder;
+      let payments: RazorpayPayment[];
+      try {
+        [order, payments] = await Promise.all([
+          dependencies.razorpay.fetchOrder(orderId),
+          dependencies.razorpay.fetchOrderPayments(orderId),
+        ]);
+      } catch {
+        throw new PaymentReconciliationError("PAYMENT_RECONCILIATION_RETRYABLE");
       }
-      return applyState(booking, choosePaymentState([payment]), trigger);
+      const providerPayment = payments.find((candidate) => candidate.id === payment.id);
+      if (!providerPayment) throw new PaymentReconciliationError("PAYMENT_ACCOUNT_MISMATCH");
+      if (payment.status === "captured" && providerPayment.status !== "captured") {
+        throw new PaymentReconciliationError("PAYMENT_RECONCILIATION_RETRYABLE");
+      }
+      const state = choosePaymentState([payment.status === "captured" ? providerPayment : payment]);
+      const capturedEvidence = state.kind === "captured"
+        ? {
+            order,
+            webhookPaymentAmountPaise: payment.amount,
+            providerPaymentAmountPaise: providerPayment.amount,
+          }
+        : null;
+      const result = await applyState(booking, state, trigger, capturedEvidence);
+      if (isAmountIntegrityFailure(result)) {
+        throw new PaymentReconciliationError("AMOUNT_INTEGRITY_FAILURE", 409);
+      }
+      return result;
     },
 
     async processWebhookEvent(eventId: string, event: ParsedRazorpayWebhook, rawBody: string) {
@@ -331,8 +487,9 @@ export function createPaymentReconciliationService(
         `;
         if (existing?.status === "processed" || existing?.status === "ignored") return { duplicate: true };
       }
+      let booking: BookingRow | null = null;
       try {
-        const booking = await bookingByOrder(event.orderId);
+        booking = await bookingByOrder(event.orderId);
         const result = event.eventType === "order.paid"
           ? await this.reconcileBooking(booking.public_reference, "webhook")
           : await this.applyVerifiedPayment(event.orderId, {
@@ -347,6 +504,15 @@ export function createPaymentReconciliationService(
         `;
         return { duplicate: false, result };
       } catch (error) {
+        if (error instanceof PaymentReconciliationError && error.code === "AMOUNT_INTEGRITY_FAILURE" && booking) {
+          await sql`
+            update public.payment_events set booking_id = ${booking.id},
+              razorpay_payment_id = ${event.paymentId}, status = 'ignored',
+              error_code = 'amount_integrity_failure', processed_at = ${clock()}, updated_at = ${clock()}
+            where razorpay_event_id = ${eventId}
+          `;
+          return { duplicate: false, integrityFailure: true };
+        }
         await sql`
           update public.payment_events set status = 'failed', error_code = 'reconciliation_failed', updated_at = ${clock()}
           where razorpay_event_id = ${eventId}

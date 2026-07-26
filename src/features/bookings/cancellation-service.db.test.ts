@@ -27,6 +27,12 @@ async function addBooking(confirmed: boolean) {
       ${confirmed ? new Date("2026-07-21T10:00:00Z") : null}
     ) returning id
   `;
+  await testSql`
+    insert into public.booking_night_prices (booking_id, stay_date, price_paise, price_source)
+    values
+      (${booking.id}, '2026-08-14', 600000, 'weekday'),
+      (${booking.id}, '2026-08-15', 600000, 'weekday')
+  `;
   await createInventoryService(testSql).withPropertyInventory(propertyId, async (tx) => {
     await claimStayNights(tx, {
       propertyId,
@@ -91,6 +97,13 @@ describe("Airbnb-wins collision cancellation", () => {
     const reconciliation = createPaymentReconciliationService(testSql, {
       razorpay: {
         publicKeyId: RAZORPAY_KEY_ID,
+        fetchOrder: async () => ({
+          id: "order_collision_1",
+          amount: 1200000,
+          currency: "INR" as const,
+          receipt: "nh_NH-COLLISION001",
+          status: "paid",
+        }),
         fetchOrderPayments: async () => [{ id: "pay_collision_1", status: "captured", amount: 1200000 }],
       },
     });

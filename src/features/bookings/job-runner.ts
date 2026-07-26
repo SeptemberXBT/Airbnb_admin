@@ -5,7 +5,11 @@ import { getDb } from "@/lib/db/client";
 import { cleanupExpiredNonces } from "@/features/internal-api/request-auth";
 import { createAttemptService } from "./attempt-service";
 import { processExpiredHolds } from "./hold-expiry";
-import { createPaymentReconciliationService, type PaymentReconciliationService } from "@/features/payments/payment-reconciliation";
+import {
+  createPaymentReconciliationService,
+  PaymentReconciliationError,
+  type PaymentReconciliationService,
+} from "@/features/payments/payment-reconciliation";
 import { createRazorpayClient } from "@/features/payments/razorpay-client";
 import { createRazorpayRefundProvider, createRefundService } from "@/features/payments/refund-service";
 import { createZeptoMailClient } from "@/features/email/zeptomail-client";
@@ -111,13 +115,17 @@ async function processPaymentReconciliationJobs(
         where id = ${row.id} and lease_token = ${leaseToken}
       `;
       processed += 1;
-    } catch {
+    } catch (error) {
+      const integrityFailure = error instanceof PaymentReconciliationError
+        && error.code === "AMOUNT_INTEGRITY_FAILURE";
       const delayMinutes = Math.min(60, 2 ** Math.min(row.attempt_count, 6));
       await sql`
         update public.payment_jobs
-        set status = 'retryable_failure', lease_token = null, lease_expires_at = null,
+        set status = ${integrityFailure ? "definitive_failure" : "retryable_failure"},
+          lease_token = null, lease_expires_at = null,
           next_attempt_at = ${new Date(now.getTime() + delayMinutes * 60_000)},
-          last_error_code = 'reconciliation_failed', updated_at = ${now}
+          last_error_code = ${integrityFailure ? "amount_integrity_failure" : "reconciliation_failed"},
+          updated_at = ${now}
         where id = ${row.id} and lease_token = ${leaseToken}
       `;
       failed += 1;

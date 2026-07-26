@@ -79,6 +79,13 @@ describe("admin test-booking cleanup", () => {
     const reconciliation = createPaymentReconciliationService(testSql, {
       razorpay: {
         publicKeyId: TEST_KEY_ID,
+        fetchOrder: async () => ({
+          id: "order_test_cleanup",
+          amount: 1000,
+          currency: "INR" as const,
+          receipt: "nh_NH-TESTCLEANUP1234",
+          status: "paid",
+        }),
         fetchOrderPayments: async () => [{ id: "pay_test_cleanup", status: "captured", amount: 1000 }],
       },
     });

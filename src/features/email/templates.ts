@@ -5,7 +5,8 @@ export type EmailTemplateKey =
   | "collision_refund_initiated"
   | "refund_processed"
   | "late_payment_refund"
-  | "refund_failed_admin";
+  | "refund_failed_admin"
+  | "amount_integrity_failure";
 
 export type GenericEmailTemplateKey = Exclude<EmailTemplateKey, "booking_confirmation">;
 
@@ -32,6 +33,10 @@ function copy(key: GenericEmailTemplateKey) {
     refund_processed: { title: "Refund processed", message: "Your full refund has been processed by the payment provider." },
     late_payment_refund: { title: "Late payment refund initiated", message: "A payment arrived after the hold expired, so it is being returned in full." },
     refund_failed_admin: { title: "Refund needs attention", message: "The automatic refund failed and requires admin follow-up." },
+    amount_integrity_failure: {
+      title: "Payment amount integrity failure",
+      message: "A captured Razorpay payment failed the booking amount integrity checks and was not confirmed. Review this booking and payment immediately.",
+    },
   };
   return values[key];
 }

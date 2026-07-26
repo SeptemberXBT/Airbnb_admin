@@ -24,18 +24,25 @@ describe("Razorpay adapter", () => {
     });
   });
 
-  it("recovers and validates an order by receipt and fetches its payments", async () => {
+  it("recovers and independently fetches a validated order, then fetches its payments", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({}))
       .mockResolvedValueOnce(jsonResponse({ items: [
         { id: "order_other", amount: 1, currency: "INR", receipt: "other", status: "created" },
         { id: "order_match", amount: 900000, currency: "INR", receipt: "receipt-1", status: "created" },
       ] }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "order_match", amount: 900000, currency: "INR", receipt: "receipt-1", status: "paid",
+      }))
       .mockResolvedValueOnce(jsonResponse({ items: [{ id: "pay_1", status: "authorized", amount: 900000 }] }));
     const client = createRazorpayClient({ keyId: "key", keySecret: "secret", fetchImpl });
     expect(await client.findOrderByReceipt("receipt-1")).toMatchObject({ id: "order_match" });
+    expect(await client.fetchOrder("order_match")).toEqual({
+      id: "order_match", amount: 900000, currency: "INR", receipt: "receipt-1", status: "paid",
+    });
     expect(await client.fetchOrderPayments("order_match")).toEqual([{ id: "pay_1", status: "authorized", amount: 900000 }]);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://api.razorpay.com/v1/orders?receipt=receipt-1");
-    expect(fetchImpl.mock.calls[1][0]).toBe("https://api.razorpay.com/v1/orders/order_match/payments");
+    expect(fetchImpl.mock.calls[1][0]).toBe("https://api.razorpay.com/v1/orders/order_match");
+    expect(fetchImpl.mock.calls[2][0]).toBe("https://api.razorpay.com/v1/orders/order_match/payments");
   });
 
   it("classifies HTTP rejection as definitive and network ambiguity without leaking provider bodies", async () => {

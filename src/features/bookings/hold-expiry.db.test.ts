@@ -27,7 +27,12 @@ describe("hold expiry worker", () => {
     await add("NH-EXPIRYWORKER001", new Date("2026-07-21T10:10:00.000Z"));
     await add("NH-EXPIRYWORKER002", new Date("2026-07-21T10:20:00.000Z"));
     const reconciliation = createPaymentReconciliationService(testSql, {
-      razorpay: { publicKeyId: "rzp_test_holdexpiry", fetchOrderPayments: vi.fn(async () => []) }, clock: () => NOW,
+      razorpay: {
+        publicKeyId: "rzp_test_holdexpiry",
+        fetchOrder: vi.fn(async () => { throw new Error("ORDER_FETCH_NOT_EXPECTED"); }),
+        fetchOrderPayments: vi.fn(async () => []),
+      },
+      clock: () => NOW,
     });
 
     expect(await processExpiredHolds(testSql, reconciliation, { now: NOW, limit: 1 })).toEqual({ processed: 1, failed: 0 });

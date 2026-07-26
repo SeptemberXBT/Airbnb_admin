@@ -36,6 +36,12 @@ describe("admin refund, cancellation, and archive", () => {
       ) returning id
     `;
     bookingId = booking.id;
+    await testSql`
+      insert into public.booking_night_prices (booking_id, stay_date, price_paise, price_source)
+      values
+        (${bookingId}, '2026-08-14', 625000, 'weekday'),
+        (${bookingId}, '2026-08-15', 625000, 'weekday')
+    `;
     await createInventoryService(testSql).withPropertyInventory(propertyId, async (tx) => {
       await claimStayNights(tx, {
         propertyId, stayDates: ["2026-08-14", "2026-08-15"], sourceKind: "website_booking", sourceId: bookingId,
@@ -69,6 +75,13 @@ describe("admin refund, cancellation, and archive", () => {
     const reconciliation = createPaymentReconciliationService(testSql, {
       razorpay: {
         publicKeyId: RAZORPAY_KEY_ID,
+        fetchOrder: async () => ({
+          id: "order_admin_refund",
+          amount: 1250000,
+          currency: "INR" as const,
+          receipt: "nh_NH-ADMINREFUND1234",
+          status: "paid",
+        }),
         fetchOrderPayments: async () => [{ id: "pay_admin_refund", status: "captured", amount: 1250000 }],
       },
     });

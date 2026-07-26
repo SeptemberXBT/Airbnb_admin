@@ -3,7 +3,7 @@ import "server-only";
 export type RazorpayOrder = {
   id: string;
   amount: number;
-  currency: "INR";
+  currency: string;
   receipt: string;
   status: string;
 };
@@ -38,7 +38,7 @@ function parseOrder(value: unknown): RazorpayOrder {
   if (
     typeof order.id !== "string"
     || !Number.isSafeInteger(order.amount)
-    || order.currency !== "INR"
+    || typeof order.currency !== "string"
     || typeof order.receipt !== "string"
     || typeof order.status !== "string"
   ) throw new RazorpayClientError("ambiguous", "RAZORPAY_INVALID_RESPONSE");
@@ -118,6 +118,11 @@ export function createRazorpayClient(options: RazorpayOptions) {
         .filter((order) => order.receipt === receipt);
       if (matches.length > 1) throw new RazorpayClientError("ambiguous", "RAZORPAY_INVALID_RESPONSE");
       return matches[0] ?? null;
+    },
+
+    async fetchOrder(orderId: string) {
+      if (!orderId) throw new Error("INVALID_RAZORPAY_ORDER_ID");
+      return parseOrder(await request(`/v1/orders/${encodeURIComponent(orderId)}`));
     },
 
     async fetchOrderPayments(orderId: string) {
