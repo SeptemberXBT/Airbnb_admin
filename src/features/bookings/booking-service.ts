@@ -13,6 +13,7 @@ import {
 import { orderReceipt } from "@/features/payments/order-recovery";
 import { createAttemptService } from "./attempt-service";
 import {
+  type AvailabilityBatchRequest,
   createAvailabilityRequestSchema,
   createBookingRequestSchema,
   currentIndiaStayDate,
@@ -20,6 +21,7 @@ import {
   type CreateBookingRequest,
   type ValidatedCreateBookingRequest,
 } from "./booking-schema";
+import { createBatchAvailabilityService } from "./batch-availability-service";
 
 type BookingSql = postgres.Sql;
 type Queryable = postgres.Sql;
@@ -552,6 +554,10 @@ function configuredAvailabilityService() {
 
 export function quoteAvailability(input: AvailabilityRequest) {
   return configuredAvailabilityService().quoteAvailability(input);
+}
+
+export function quoteAvailabilityBatch(input: AvailabilityBatchRequest) {
+  return createBatchAvailabilityService(getDb()).quoteBatch(input);
 }
 
 export function createBooking(input: CreateBookingRequest, idempotencyKey: string) {
