@@ -8,6 +8,7 @@ import {
 import {
   configuredBookingRecoveryService,
 } from "@/features/bookings/booking-recovery-service";
+import { getPublicBookingStatus } from "@/features/bookings/booking-service";
 import {
   BookingResumeServiceError,
 } from "@/features/bookings/booking-resume-service";
@@ -37,7 +38,12 @@ export async function POST(
       resumeToken,
     );
     scheduleBookingJobs();
-    return NextResponse.json(result);
+    return NextResponse.json(
+      request.headers.get("X-Noir-Api-Version") === "2"
+        && result.kind !== "resumable"
+        ? await getPublicBookingStatus(parsedReference)
+        : result,
+    );
   } catch (error) {
     if (error instanceof InternalRequestAuthError) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
