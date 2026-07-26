@@ -123,6 +123,7 @@ export function createPaymentReconciliationService(
       on conflict (idempotency_identity) do update set
         status = 'retryable_failure', last_error_code = ${errorCode},
         next_attempt_at = now(), updated_at = now()
+      where payment_jobs.status <> 'definitive_failure'
     `;
   }
 

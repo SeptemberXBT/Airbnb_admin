@@ -241,6 +241,16 @@ describe("payment reconciliation", () => {
       { status: "ignored", error_code: "amount_integrity_failure" },
       { status: "ignored", error_code: "amount_integrity_failure" },
     ]);
+    const unavailableService = createPaymentReconciliationService(testSql, {
+      razorpay: {
+        publicKeyId: "rzp_test_reconciliation",
+        fetchOrder: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }),
+        fetchOrderPayments: vi.fn(async () => { throw new RazorpayClientError("ambiguous", "RAZORPAY_UNAVAILABLE"); }),
+      },
+      clock: () => NOW,
+    });
+    await expect(unavailableService.reconcileBooking(booking.public_reference, "worker"))
+      .rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_RETRYABLE" });
     expect(await testSql`
       select status, last_error_code from public.payment_jobs
       where booking_id = ${booking.id} and job_kind = 'payment_reconciliation'
