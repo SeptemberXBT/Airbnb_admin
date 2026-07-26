@@ -110,6 +110,109 @@ function assertComplete(state) {
   }
 }
 
+async function applyMigrationFile(sql, filename, label) {
+  const migrationPath = path.join(
+    process.cwd(),
+    `supabase/migrations/${filename}`,
+  );
+  const migration = await readFile(migrationPath, "utf8");
+  console.log(`Applying production migration ${label} atomically.`);
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe(migration);
+  });
+  console.log(`Production migration ${label} committed.`);
+}
+
+async function ensureOptionalInboundIcal(sql) {
+  const readState = async () => {
+    const rows = await sql`
+      select is_nullable
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'listings'
+        and column_name = 'inbound_ical_url_encrypted'
+    `;
+    if (rows.length !== 1) {
+      throw new Error(
+        "Production migration 0009 cannot run; listings.inbound_ical_url_encrypted is missing",
+      );
+    }
+    return rows[0].is_nullable;
+  };
+
+  if (await readState() === "NO") {
+    await applyMigrationFile(
+      sql,
+      "0009_optional_inbound_ical.sql",
+      "0009",
+    );
+  } else {
+    console.log("Production migration 0009 is already complete; no changes applied.");
+  }
+
+  if (await readState() !== "YES") {
+    throw new Error(
+      "Production migration 0009 verification failed; inbound iCal remains required",
+    );
+  }
+  console.log("Production migration 0009 verified (inbound iCal is optional).");
+}
+
+async function readResumeTokenSchemaState(sql) {
+  const [table] = await sql`
+    select to_regclass('public.booking_resume_tokens')::text as name
+  `;
+  if (!table?.name) {
+    return { table: false, rowSecurity: false, expiryIndex: false };
+  }
+
+  const [security] = await sql`
+    select relrowsecurity
+    from pg_class
+    where oid = 'public.booking_resume_tokens'::regclass
+  `;
+  const indexes = await sql`
+    select indexname
+    from pg_indexes
+    where schemaname = 'public'
+      and tablename = 'booking_resume_tokens'
+  `;
+  return {
+    table: true,
+    rowSecurity: security?.relrowsecurity === true,
+    expiryIndex: indexes.some(
+      (index) => index.indexname === "booking_resume_tokens_expiry_idx",
+    ),
+  };
+}
+
+async function ensureBookingResumeTokens(sql) {
+  const before = await readResumeTokenSchemaState(sql);
+  if (!before.table) {
+    await applyMigrationFile(
+      sql,
+      "0010_booking_resume_tokens.sql",
+      "0010",
+    );
+  } else if (!before.rowSecurity || !before.expiryIndex) {
+    throw new Error(
+      "Production schema is partially migrated for 0010 booking resume tokens",
+    );
+  } else {
+    console.log("Production migration 0010 is already complete; no changes applied.");
+  }
+
+  const after = await readResumeTokenSchemaState(sql);
+  if (!after.table || !after.rowSecurity || !after.expiryIndex) {
+    throw new Error(
+      "Production migration 0010 verification failed; booking resume token security is incomplete",
+    );
+  }
+  console.log(
+    "Production migration 0010 verified (resume-token table, RLS, and expiry index).",
+  );
+}
+
 async function upsertVaultSecret(sql, { name, value, description }) {
   const existing = await sql`
     select id::text as id
@@ -193,22 +296,19 @@ async function applyProductionMigration() {
     );
 
     if (action === "apply") {
-      const migrationPath = path.join(
-        process.cwd(),
-        "supabase/migrations/0008_premium_booking_checkout.sql",
+      await applyMigrationFile(
+        sql,
+        "0008_premium_booking_checkout.sql",
+        "0008",
       );
-      const migration = await readFile(migrationPath, "utf8");
-      console.log("Applying production migration 0008 atomically.");
-      await sql.begin(async (transaction) => {
-        await transaction.unsafe(migration);
-      });
-      console.log("Production migration 0008 committed.");
     } else {
       console.log("Production migration 0008 is already complete; no changes applied.");
     }
 
     assertComplete(await readSchemaState(sql));
     console.log(`Production migration 0008 verified (${expectedMarkerCount}/${expectedMarkerCount} markers).`);
+    await ensureOptionalInboundIcal(sql);
+    await ensureBookingResumeTokens(sql);
     await configureBookingWorker(sql);
   } finally {
     await sql.end({ timeout: 5 });

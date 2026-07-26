@@ -183,6 +183,20 @@ describe("initial database migration", () => {
     expect(down.trim()).toBe("drop table if exists public.booking_resume_tokens;");
   });
 
+  it("applies and verifies every post-premium production migration", async () => {
+    const runner = await readFile(
+      path.join(process.cwd(), "scripts/apply-production-migration.mjs"),
+      "utf8",
+    );
+
+    expect(runner).toMatch(/0009_optional_inbound_ical\.sql/i);
+    expect(runner).toMatch(/0010_booking_resume_tokens\.sql/i);
+    expect(runner).toMatch(/information_schema\.columns[\s\S]*is_nullable/i);
+    expect(runner).toMatch(/to_regclass\('public\.booking_resume_tokens'\)/i);
+    expect(runner).toMatch(/relrowsecurity/i);
+    expect(runner).toMatch(/booking_resume_tokens_expiry_idx/i);
+  });
+
   it("defines the one-minute Supabase booking worker without committing secrets", async () => {
     const up = await readFile(path.join(process.cwd(), "ops/setup-supabase-booking-worker.sql"), "utf8");
     expect(up).toMatch(/create extension if not exists pg_cron/i);
