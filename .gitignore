@@ -11,3 +11,4 @@ test-results/
 *.tsbuildinfo
 .vercel/
 supabase/.temp/
+.worktrees/
