@@ -26,6 +26,8 @@ export function demoCalendar(startDate: string): CalendarProperty[] {
         cleaningDurationMinutes: null,
         reservationUrl: null,
         syncToAirbnb: false, airbnbObserved: false,
+        completedEarlyAt: null, earlyCheckoutEffectiveDate: null,
+        releaseObservedOnAirbnb: false, sameDayTurnover: false,
       },
     ];
     if (index === 0) entries.push({
@@ -34,6 +36,8 @@ export function demoCalendar(startDate: string): CalendarProperty[] {
       privateBookingName: "Synthetic Direct", paymentAmount: "12000.00", privateContact: null, privateNote: "Synthetic fixture only",
       expectedCheckinTime: "13:00", expectedCheckoutTime: "11:00", cleaningDurationMinutes: 20,
       reservationUrl: null, syncToAirbnb: true, airbnbObserved: false,
+      completedEarlyAt: null, earlyCheckoutEffectiveDate: null,
+      releaseObservedOnAirbnb: false, sameDayTurnover: false,
     });
     if (index === 3) entries.push({
       id: "demo-block-1", propertyId, listingId: null, source: "local", kind: "blocked",
@@ -41,6 +45,8 @@ export function demoCalendar(startDate: string): CalendarProperty[] {
       privateBookingName: null, paymentAmount: null, privateContact: null, privateNote: "Synthetic maintenance block",
       expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null,
       reservationUrl: null, syncToAirbnb: true, airbnbObserved: false,
+      completedEarlyAt: null, earlyCheckoutEffectiveDate: null,
+      releaseObservedOnAirbnb: false, sameDayTurnover: false,
     });
     return {
       id: propertyId, name, defaultCheckinTime: "13:00", defaultCheckoutTime: "11:00",

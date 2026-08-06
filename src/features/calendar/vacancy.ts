@@ -33,7 +33,7 @@ export function calculateVacancy(properties: VacancyProperty[], startDate: strin
   const byDate = Array.from({ length: nights }, (_, index) => {
     const date = format(addDays(start, index), "yyyy-MM-dd");
     const vacant = properties.filter((property) => !property.entries.some((entry) =>
-      entry.startDate <= date && entry.endDate > date));
+      entry.kind !== "completed_early" && entry.startDate <= date && entry.endDate > date));
     return {
       date,
       vacantPropertyIds: vacant.map((property) => property.id),

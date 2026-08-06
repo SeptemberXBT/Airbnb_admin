@@ -31,4 +31,21 @@ describe("vacancy calculation", () => {
     expect(() => calculateVacancy([], "2026-07-12", "2026-07-11")).toThrow("INVALID_RANGE");
     expect(() => calculateVacancy([], "2025-01-01", "2026-01-02")).toThrow("RANGE_TOO_LARGE");
   });
+
+  it("does not count completed-early history as occupied", () => {
+    const summary = calculateVacancy([{
+      id: "released",
+      name: "Released Suite",
+      isStale: false,
+      entries: [{
+        id: "completed",
+        kind: "completed_early",
+        startDate: "2026-08-14",
+        endDate: "2026-08-18",
+      }],
+    }], "2026-08-14", "2026-08-17");
+
+    expect(summary.totalVacantRoomNights).toBe(4);
+    expect(summary.byDate.every((day) => day.vacantPropertyIds.includes("released"))).toBe(true);
+  });
 });

@@ -38,6 +38,7 @@ const dateString = (date: Date) => format(date, "yyyy-MM-dd");
 const kindClass: Record<CalendarEntry["kind"], string> = {
   reservation: "reservation", unavailable: "unavailable", unknown: "unknown",
   direct_reservation: "direct", blocked: "blocked", payment_hold: "hold",
+  completed_early: "completed-early",
 };
 
 function eventTitle(entry: CalendarEntry) {

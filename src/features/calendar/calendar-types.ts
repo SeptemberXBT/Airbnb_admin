@@ -3,7 +3,7 @@ export type CalendarEntry = {
   propertyId: string;
   listingId: string | null;
   source: "airbnb" | "local" | "website";
-  kind: "reservation" | "unavailable" | "unknown" | "direct_reservation" | "blocked" | "payment_hold";
+  kind: "reservation" | "unavailable" | "unknown" | "direct_reservation" | "blocked" | "payment_hold" | "completed_early";
   label: string;
   startDate: string;
   endDate: string;
@@ -17,6 +17,10 @@ export type CalendarEntry = {
   reservationUrl: string | null;
   syncToAirbnb: boolean;
   airbnbObserved: boolean;
+  completedEarlyAt: string | null;
+  earlyCheckoutEffectiveDate: string | null;
+  releaseObservedOnAirbnb: boolean;
+  sameDayTurnover: boolean;
   publicReference?: string | null;
   holdExpiresAt?: string | null;
 };

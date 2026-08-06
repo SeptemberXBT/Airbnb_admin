@@ -44,14 +44,18 @@ async function getCalendarDataWithSql(sql: postgres.Sql, userId: string, startDa
     private_note: string | null; payment_amount: string | null; sync_to_airbnb: boolean; expected_checkin_time: string | null;
     expected_checkout_time: string | null; cleaning_duration_minutes: number | null;
     booking_id: string | null; public_reference: string | null;
+    completed_early_at: string | null; early_checkout_effective_date: string | null;
   }[]>`
     select e.id, e.property_id, e.listing_id, e.entry_type, e.start_date::text, e.end_date::text,
       e.private_booking_name, e.private_contact, e.private_note, e.payment_amount::text, e.sync_to_airbnb,
       o.expected_checkin_time::text, o.expected_checkout_time::text, o.cleaning_duration_minutes,
-      e.booking_id, b.public_reference
+      e.booking_id, b.public_reference, e.completed_early_at::text,
+      e.early_checkout_effective_date::text
     from public.local_calendar_entries e left join public.operation_overrides o on o.local_entry_id = e.id
     left join public.bookings b on b.id = e.booking_id
-    where e.property_id in ${sql(propertyIds)} and e.active and e.start_date < ${viewEnd} and e.end_date > ${startDate}
+    where e.property_id in ${sql(propertyIds)}
+      and (e.active or (e.completed_early_at is not null and e.archived_at is null))
+      and e.start_date < ${viewEnd} and e.end_date > ${startDate}
   `;
   const holds = await sql<{
     id: string; property_id: string; public_reference: string; checkin: string; checkout: string; hold_expires_at: string;
@@ -78,6 +82,10 @@ async function getCalendarDataWithSql(sql: postgres.Sql, userId: string, startDa
   `;
   const entriesByProperty = new Map<string, CalendarEntry[]>();
   const add = (propertyId: string, entry: CalendarEntry) => entriesByProperty.set(propertyId, [...(entriesByProperty.get(propertyId) ?? []), entry]);
+  const propertySync = new Map(properties.map((property) => [property.id, {
+    lastSyncAt: property.last_sync_at,
+    lastSyncStatus: property.last_sync_status,
+  }]));
   const observedBusyDates = new Set(external
     .filter((row) => row.event_type === "unavailable")
     .map((row) => `${row.property_id}:${row.start_date}:${row.end_date}`));
@@ -89,31 +97,67 @@ async function getCalendarDataWithSql(sql: postgres.Sql, userId: string, startDa
     expectedCheckoutTime: row.expected_checkout_time?.slice(0, 5) ?? null,
     cleaningDurationMinutes: row.cleaning_duration_minutes, reservationUrl: row.sanitized_reservation_url,
     syncToAirbnb: false, airbnbObserved: false,
+    completedEarlyAt: null, earlyCheckoutEffectiveDate: null,
+    releaseObservedOnAirbnb: false, sameDayTurnover: false,
   });
-  for (const row of local) add(row.property_id, {
-    id: row.id, propertyId: row.property_id, listingId: row.listing_id, source: row.booking_id ? "website" : "local", kind: row.entry_type,
-    label: row.booking_id
-      ? `Website booking · ${row.public_reference}`
-      : row.entry_type === "direct_reservation"
-        ? row.private_booking_name?.trim() || "Direct reservation"
-        : "Blocked",
-    startDate: row.start_date, endDate: row.end_date, privateBookingName: row.booking_id ? null : row.private_booking_name,
-    paymentAmount: row.booking_id ? null : row.payment_amount,
-    privateContact: row.booking_id ? null : row.private_contact, privateNote: row.booking_id ? null : row.private_note,
-    expectedCheckinTime: row.expected_checkin_time?.slice(0, 5) ?? null,
-    expectedCheckoutTime: row.expected_checkout_time?.slice(0, 5) ?? null,
-    cleaningDurationMinutes: row.cleaning_duration_minutes, reservationUrl: null, syncToAirbnb: row.sync_to_airbnb,
-    airbnbObserved: row.sync_to_airbnb && observedBusyDates.has(`${row.property_id}:${row.start_date}:${row.end_date}`),
-    publicReference: row.public_reference, holdExpiresAt: null,
-  });
+  for (const row of local) {
+    const completedEarly = Boolean(row.completed_early_at);
+    const sync = propertySync.get(row.property_id);
+    const oldBusyRangeStillPresent = external.some((externalRow) =>
+      externalRow.property_id === row.property_id
+      && externalRow.event_type === "unavailable"
+      && externalRow.start_date < row.end_date
+      && externalRow.end_date > row.start_date);
+    const releaseObservedOnAirbnb = completedEarly
+      && sync?.lastSyncStatus === "success"
+      && Boolean(sync.lastSyncAt)
+      && new Date(sync.lastSyncAt!).getTime() > new Date(row.completed_early_at!).getTime()
+      && !oldBusyRangeStillPresent;
+    add(row.property_id, {
+      id: row.id, propertyId: row.property_id, listingId: row.listing_id, source: row.booking_id ? "website" : "local",
+      kind: completedEarly ? "completed_early" : row.entry_type,
+      label: completedEarly
+        ? "Completed early"
+        : row.booking_id
+          ? `Website booking · ${row.public_reference}`
+          : row.entry_type === "direct_reservation"
+            ? row.private_booking_name?.trim() || "Direct reservation"
+            : "Blocked",
+      startDate: row.start_date, endDate: row.end_date, privateBookingName: row.booking_id ? null : row.private_booking_name,
+      paymentAmount: row.booking_id ? null : row.payment_amount,
+      privateContact: row.booking_id ? null : row.private_contact, privateNote: row.booking_id ? null : row.private_note,
+      expectedCheckinTime: row.expected_checkin_time?.slice(0, 5) ?? null,
+      expectedCheckoutTime: row.expected_checkout_time?.slice(0, 5) ?? null,
+      cleaningDurationMinutes: row.cleaning_duration_minutes, reservationUrl: null, syncToAirbnb: row.sync_to_airbnb,
+      airbnbObserved: row.sync_to_airbnb && observedBusyDates.has(`${row.property_id}:${row.start_date}:${row.end_date}`),
+      completedEarlyAt: row.completed_early_at,
+      earlyCheckoutEffectiveDate: row.early_checkout_effective_date,
+      releaseObservedOnAirbnb,
+      sameDayTurnover: false,
+      publicReference: row.public_reference, holdExpiresAt: null,
+    });
+  }
   for (const row of holds) add(row.property_id, {
     id: `website-hold:${row.id}`, propertyId: row.property_id, listingId: null, source: "website", kind: "payment_hold",
     label: "Payment in progress", startDate: row.checkin, endDate: row.checkout,
     privateBookingName: null, paymentAmount: null, privateContact: null, privateNote: null,
     expectedCheckinTime: null, expectedCheckoutTime: null, cleaningDurationMinutes: null,
     reservationUrl: null, syncToAirbnb: false, airbnbObserved: false,
+    completedEarlyAt: null, earlyCheckoutEffectiveDate: null,
+    releaseObservedOnAirbnb: false, sameDayTurnover: false,
     publicReference: row.public_reference, holdExpiresAt: row.hold_expires_at,
   });
+  for (const entries of entriesByProperty.values()) {
+    const completedEntries = entries.filter((entry) => entry.kind === "completed_early");
+    for (const reservation of entries.filter((entry) => entry.source === "airbnb" && entry.kind === "reservation")) {
+      const overlappingHistory = completedEntries.filter((entry) =>
+        entry.startDate < reservation.endDate && entry.endDate > reservation.startDate);
+      if (overlappingHistory.length === 0) continue;
+      reservation.label = "Same-day turnover · second booking";
+      reservation.sameDayTurnover = true;
+      for (const entry of overlappingHistory) entry.sameDayTurnover = true;
+    }
+  }
   const alertsByProperty = new Map<string, CalendarAlert[]>();
   for (const row of alertRows) {
     const alerts = alertsByProperty.get(row.property_id) ?? [];

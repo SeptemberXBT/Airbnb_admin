@@ -32,6 +32,10 @@ const entry = (id: string, startDate: string, endDate: string): CalendarProperty
   reservationUrl: null,
   syncToAirbnb: false,
   airbnbObserved: false,
+  completedEarlyAt: null,
+  earlyCheckoutEffectiveDate: null,
+  releaseObservedOnAirbnb: false,
+  sameDayTurnover: false,
 });
 
 describe("calendar window state", () => {

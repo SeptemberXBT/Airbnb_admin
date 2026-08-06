@@ -107,4 +107,53 @@ describe("booking states in the master schedule", () => {
     expect(JSON.stringify(room)).not.toMatch(/Private|@example\.test/);
     expect(room.entries.some((entry) => entry.id.includes(expired.id))).toBe(false);
   });
+
+  it("shows an overlapping Airbnb reservation as a same-day turnover beside completed history", async () => {
+    const [property] = await testSql<{ id: string }[]>`
+      insert into public.properties (name) values ('Turnover Suite') returning id
+    `;
+    const [listing] = await testSql<{ id: string }[]>`
+      insert into public.listings (
+        property_id, display_name, inbound_ical_url_encrypted, outbound_token_hash,
+        last_sync_at, last_sync_status
+      ) values (
+        ${property.id}, 'Turnover Listing', 'encrypted', ${`hash-${property.id}`},
+        '2026-08-16T09:00:00Z', 'success'
+      ) returning id
+    `;
+    const [completed] = await testSql<{ id: string }[]>`
+      insert into public.local_calendar_entries (
+        property_id, listing_id, entry_type, start_date, end_date,
+        private_booking_name, sync_to_airbnb, active, created_by,
+        completed_early_at, completed_early_by, early_checkout_effective_date
+      ) values (
+        ${property.id}, ${listing.id}, 'direct_reservation', '2026-08-14', '2026-08-18',
+        'Early Guest', true, false, ${USER_ID},
+        '2026-08-15T08:30:00Z', ${USER_ID}, '2026-08-15'
+      ) returning id
+    `;
+    const [airbnb] = await testSql<{ id: string }[]>`
+      insert into public.external_calendar_events (
+        listing_id, source_uid, event_type, start_date, end_date, source_content_hash
+      ) values (
+        ${listing.id}, 'second-airbnb-booking', 'reservation',
+        '2026-08-15', '2026-08-17', 'second-content'
+      ) returning id
+    `;
+
+    const [room] = await createCalendarService(testSql).getCalendarData(USER_ID, "2026-08-14", 5);
+
+    expect(room.entries).toHaveLength(2);
+    expect(room.entries.find((entry) => entry.id === completed.id)).toMatchObject({
+      kind: "completed_early",
+      label: "Completed early",
+      sameDayTurnover: true,
+    });
+    expect(room.entries.find((entry) => entry.id === airbnb.id)).toMatchObject({
+      kind: "reservation",
+      label: "Same-day turnover · second booking",
+      sameDayTurnover: true,
+    });
+    expect(room.alerts).toEqual([]);
+  });
 });
