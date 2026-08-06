@@ -26,6 +26,13 @@ const expectedIndexes = [
 ];
 const expectedMarkerCount =
   expectedColumns.length + expectedConstraints.length + expectedIndexes.length + 1;
+const expectedEarlyCheckoutColumns = [
+  "completed_early_at",
+  "completed_early_by",
+  "early_checkout_effective_date",
+];
+const expectedEarlyCheckoutConstraint = "local_calendar_entries_early_checkout_complete";
+const expectedEarlyCheckoutMarkerCount = expectedEarlyCheckoutColumns.length + 1;
 const defaultBookingWorkerUrl =
   "https://noirhausadmin-booking-preview.vercel.app/api/bookings/cron";
 
@@ -45,6 +52,22 @@ function decidePremiumMigrationAction(presentMarkers, expectedMarkers) {
   throw new Error(
     `Production schema is partially migrated (${presentMarkers}/${expectedMarkers} markers present)`,
   );
+}
+
+function decideEarlyCheckoutMigrationAction(presentMarkers) {
+  try {
+    return decidePremiumMigrationAction(presentMarkers, expectedEarlyCheckoutMarkerCount);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Production schema is partially migrated")
+    ) {
+      throw new Error(
+        `Production migration 0010 is partially applied (${presentMarkers}/${expectedEarlyCheckoutMarkerCount} markers present)`,
+      );
+    }
+    throw error;
+  }
 }
 
 function validateBookingWorkerUrl(value) {
@@ -91,6 +114,40 @@ async function readSchemaState(sql) {
     indexes: new Set(expectedIndexes.filter((name) => allIndexes.has(name))),
     aliasTable: Boolean(aliasTable?.name),
   };
+}
+
+async function readEarlyCheckoutSchemaState(sql) {
+  const columns = await sql`
+    select column_name
+    from information_schema.columns
+    where table_schema = 'public' and table_name = 'local_calendar_entries'
+      and column_name in ${sql(expectedEarlyCheckoutColumns)}
+  `;
+  const constraints = await sql`
+    select conname
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and conname = ${expectedEarlyCheckoutConstraint}
+  `;
+
+  return {
+    columns: new Set(columns.map((row) => row.column_name)),
+    constraint: constraints.length === 1,
+  };
+}
+
+function countEarlyCheckoutMarkers(state) {
+  return state.columns.size + Number(state.constraint);
+}
+
+function assertEarlyCheckoutComplete(state) {
+  const missing = [
+    ...expectedEarlyCheckoutColumns.filter((name) => !state.columns.has(name)),
+    ...(state.constraint ? [] : [expectedEarlyCheckoutConstraint]),
+  ];
+  if (missing.length > 0) {
+    throw new Error(`Production migration 0010 verification failed; missing ${missing.join(", ")}`);
+  }
 }
 
 function countPresentMarkers(state) {
@@ -209,6 +266,30 @@ async function applyProductionMigration() {
 
     assertComplete(await readSchemaState(sql));
     console.log(`Production migration 0008 verified (${expectedMarkerCount}/${expectedMarkerCount} markers).`);
+
+    const earlyCheckoutBefore = await readEarlyCheckoutSchemaState(sql);
+    const earlyCheckoutAction = decideEarlyCheckoutMigrationAction(
+      countEarlyCheckoutMarkers(earlyCheckoutBefore),
+    );
+    if (earlyCheckoutAction === "apply") {
+      const migrationPath = path.join(
+        process.cwd(),
+        "supabase/migrations/0010_one_click_early_checkout.sql",
+      );
+      const migration = await readFile(migrationPath, "utf8");
+      console.log("Applying production migration 0010 atomically.");
+      await sql.begin(async (transaction) => {
+        await transaction.unsafe(migration);
+      });
+      console.log("Production migration 0010 committed.");
+    } else {
+      console.log("Production migration 0010 is already complete; no changes applied.");
+    }
+
+    assertEarlyCheckoutComplete(await readEarlyCheckoutSchemaState(sql));
+    console.log(
+      `Production migration 0010 verified (${expectedEarlyCheckoutMarkerCount}/${expectedEarlyCheckoutMarkerCount} markers).`,
+    );
     await configureBookingWorker(sql);
   } finally {
     await sql.end({ timeout: 5 });
