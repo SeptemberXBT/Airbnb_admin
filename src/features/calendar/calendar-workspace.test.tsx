@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CalendarProperty } from "./calendar-types";
+import type { CalendarEntry, CalendarProperty } from "./calendar-types";
 import { CalendarWorkspace } from "./calendar-workspace";
 
 const property: CalendarProperty = {
@@ -15,6 +15,36 @@ const property: CalendarProperty = {
   isStale: false,
   entries: [],
 };
+
+function calendarEntry(overrides: Partial<CalendarEntry> = {}): CalendarEntry {
+  return {
+    id: "entry-1",
+    propertyId: property.id,
+    listingId: null,
+    source: "local",
+    kind: "direct_reservation",
+    label: "Mayank",
+    startDate: "2020-01-01",
+    endDate: "2099-01-01",
+    privateBookingName: "Mayank",
+    paymentAmount: "2500.00",
+    privateContact: null,
+    privateNote: null,
+    expectedCheckinTime: null,
+    expectedCheckoutTime: null,
+    cleaningDurationMinutes: null,
+    reservationUrl: null,
+    syncToAirbnb: true,
+    airbnbObserved: true,
+    completedEarlyAt: null,
+    earlyCheckoutEffectiveDate: null,
+    releaseObservedOnAirbnb: false,
+    sameDayTurnover: false,
+    publicReference: null,
+    holdExpiresAt: null,
+    ...overrides,
+  };
+}
 
 describe("CalendarWorkspace mutation feedback", () => {
   beforeEach(() => {
@@ -151,5 +181,88 @@ describe("CalendarWorkspace mutation feedback", () => {
     expect(screen.getByRole("button", { name: /Website booking.*NH-BOOKED123456/i })).toHaveClass("calendar-event--direct");
     expect(screen.getByRole("alert")).toHaveTextContent("Refund failed for NH-FAILED123456");
     expect(document.body).not.toHaveTextContent("riya@example.test");
+  });
+
+  it("releases an eligible direct reservation with one click and refreshes it as read-only history", async () => {
+    const activeEntry = calendarEntry();
+    const completedEntry = calendarEntry({
+      kind: "completed_early",
+      label: "Completed early",
+      completedEarlyAt: "2026-08-07T12:00:00.000Z",
+      earlyCheckoutEffectiveDate: "2026-08-07",
+      airbnbObserved: false,
+    });
+    const activeProperty = { ...property, entries: [activeEntry] };
+    const completedProperty = { ...property, entries: [completedEntry] };
+    let finishRelease: (response: Response) => void = () => undefined;
+    const pendingRelease = new Promise<Response>((resolve) => { finishRelease = resolve; });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(pendingRelease)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        startDate: "2026-07-31",
+        days: 28,
+        properties: [completedProperty],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<CalendarWorkspace properties={[activeProperty]} startDate="2026-07-31" anchorDate="2026-08-07" zoom={14} demoMode={false} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Mayank, 2020-01-01 to 2099-01-01/i }));
+    const dialog = screen.getByRole("dialog");
+    const release = within(dialog).getByRole("button", { name: "Check out early — release room now" });
+    const releaseClick = userEvent.click(release);
+
+    await waitFor(() => expect(release).toBeDisabled());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/local-entries/entry-1/early-checkout", { method: "POST" });
+    expect(confirm).not.toHaveBeenCalled();
+
+    finishRelease(new Response(JSON.stringify({
+      ok: true,
+      entryId: activeEntry.id,
+      completedEarlyAt: "2026-08-07T12:00:00.000Z",
+      earlyCheckoutEffectiveDate: "2026-08-07",
+      idempotent: false,
+    }), { status: 200 }));
+    await releaseClick;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(within(dialog).getByText("Completed early")).toBeInTheDocument();
+    expect(within(dialog).getByText("Released internally — awaiting Airbnb refresh")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["future direct", calendarEntry({ startDate: "2026-08-20", endDate: "2026-08-21" })],
+    ["blocked", calendarEntry({ kind: "blocked", label: "Blocked" })],
+    ["Airbnb", calendarEntry({ source: "airbnb", kind: "reservation", label: "Airbnb reservation" })],
+    ["completed", calendarEntry({
+      kind: "completed_early",
+      label: "Completed early",
+      completedEarlyAt: "2026-08-07T12:00:00.000Z",
+      earlyCheckoutEffectiveDate: "2026-08-07",
+    })],
+  ])("does not offer early checkout for a %s entry", async (_label, entry) => {
+    const entryProperty = { ...property, entries: [entry] };
+    render(<CalendarWorkspace properties={[entryProperty]} startDate="2026-07-31" anchorDate="2026-08-07" zoom={14} demoMode={false} />);
+
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(`${entry.label},`) }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: "Check out early — release room now" })).not.toBeInTheDocument();
+  });
+
+  it("shows when Airbnb has observed the released inventory", async () => {
+    const completedProperty = { ...property, entries: [calendarEntry({
+      kind: "completed_early",
+      label: "Completed early",
+      completedEarlyAt: "2026-08-07T12:00:00.000Z",
+      earlyCheckoutEffectiveDate: "2026-08-07",
+      releaseObservedOnAirbnb: true,
+    })] };
+    render(<CalendarWorkspace properties={[completedProperty]} startDate="2026-07-31" anchorDate="2026-08-07" zoom={14} demoMode={false} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Completed early,/i }));
+    expect(within(screen.getByRole("dialog")).getByText("Release observed on Airbnb")).toBeInTheDocument();
   });
 });

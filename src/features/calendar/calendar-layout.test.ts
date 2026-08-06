@@ -20,4 +20,16 @@ describe("calendar event layout", () => {
       { id: "c", lane: 0 },
     ]);
   });
+
+  it("keeps completed history and a same-day Airbnb turnover in separate lanes", () => {
+    const entries = [
+      { id: "completed", startDate: "2026-08-14", endDate: "2026-08-18", label: "Completed early" },
+      { id: "airbnb", startDate: "2026-08-15", endDate: "2026-08-17", label: "Same-day turnover · second booking" },
+    ];
+
+    expect(assignEventLanes(entries).map(({ id, lane, label }) => ({ id, lane, label }))).toEqual([
+      { id: "completed", lane: 0, label: "Completed early" },
+      { id: "airbnb", lane: 1, label: "Same-day turnover · second booking" },
+    ]);
+  });
 });

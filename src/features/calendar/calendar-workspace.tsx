@@ -72,7 +72,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const [message, setMessage] = useState("");
   const [overlap, setOverlap] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [mutationPending, setMutationPending] = useState<"save" | "archive" | "">("");
+  const [mutationPending, setMutationPending] = useState<"save" | "archive" | "early_checkout" | "">("");
   const [loadingDirection, setLoadingDirection] = useState<"previous" | "next" | "jump" | "">("");
   const [vacancyPanel, setVacancyPanel] = useState<VacancyPanel | null>(null);
   const [summaryStart, setSummaryStart] = useState(dateString(subDays(new Date(), 6)));
@@ -85,6 +85,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   const [exportError, setExportError] = useState("");
   const dates = useMemo(() => Array.from({ length: dayCount }, (_, index) => addDays(parseISO(windowStart), index)), [dayCount, windowStart]);
   const today = dateString(new Date());
+  const indiaToday = formatInTimeZone(new Date(), "Asia/Kolkata", "yyyy-MM-dd");
   const vacancy = useMemo(() => calculateVacancy(properties, windowStart, dateString(addDays(parseISO(windowStart), dayCount - 1))), [dayCount, properties, windowStart]);
   const propertiesById = useMemo(() => new Map(properties.map((property) => [property.id, property])), [properties]);
 
@@ -167,7 +168,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   }
 
   async function jumpTo(date: string) {
-    if (loadingRef.current) return;
+    if (loadingRef.current) return null;
     loadingRef.current = true;
     setLoadingDirection("jump");
     setMessage("");
@@ -181,8 +182,10 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
       requestAnimationFrame(() => {
         if (scroller.current) scroller.current.scrollLeft = 7 * cellWidth();
       });
+      return incoming;
     } catch {
       setMessage("Could not jump to that date. Try again.");
+      return null;
     } finally {
       loadingRef.current = false;
       setLoadingDirection("");
@@ -289,6 +292,67 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
     }
   }
 
+  function canCheckOutEarly(entry: CalendarEntry | undefined) {
+    return Boolean(
+      entry
+      && entry.source === "local"
+      && entry.kind === "direct_reservation"
+      && entry.startDate <= indiaToday
+      && indiaToday < entry.endDate,
+    );
+  }
+
+  async function checkOutEarly(entry: CalendarEntry) {
+    if (demoMode) { setMessage("Connect Supabase to release this room."); return; }
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    setMutationPending("early_checkout");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/local-entries/${encodeURIComponent(entry.id)}/early-checkout`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        setMessage(response.status === 409
+          ? "This reservation is no longer eligible for early checkout."
+          : "Could not release this room. No changes were made.");
+        return;
+      }
+      const result = await response.json() as {
+        completedEarlyAt: string;
+        earlyCheckoutEffectiveDate: string;
+      };
+      const fallbackEntry: CalendarEntry = {
+        ...entry,
+        kind: "completed_early",
+        label: "Completed early",
+        completedEarlyAt: result.completedEarlyAt,
+        earlyCheckoutEffectiveDate: result.earlyCheckoutEffectiveDate,
+        airbnbObserved: false,
+        releaseObservedOnAirbnb: false,
+      };
+      const incoming = await jumpTo(visibleDate);
+      const refreshedProperty = incoming?.properties.find((property) => property.id === entry.propertyId);
+      const refreshedEntry = refreshedProperty?.entries.find((candidate) => candidate.id === entry.id);
+      const nextProperty = refreshedProperty ?? editor?.property;
+      const nextEntry = refreshedEntry ?? fallbackEntry;
+      if (!refreshedProperty) {
+        setProperties((current) => current.map((property) => property.id === entry.propertyId
+          ? { ...property, entries: property.entries.map((candidate) => candidate.id === entry.id ? fallbackEntry : candidate) }
+          : property));
+      }
+      if (nextProperty) setEditor({ property: nextProperty, entry: nextEntry, startDate: nextEntry.startDate });
+      setMessage(nextEntry.releaseObservedOnAirbnb
+        ? "Release observed on Airbnb"
+        : "Released internally — awaiting Airbnb refresh");
+    } catch {
+      setMessage("Could not release this room. No changes were made.");
+    } finally {
+      mutationRef.current = false;
+      setMutationPending("");
+    }
+  }
+
   async function refreshNow() {
     if (demoMode) { setMessage("Demo calendar refreshed."); return; }
     setSyncing(true);
@@ -329,7 +393,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
   }
 
   const shown = (entry: CalendarEntry) => filter === "all"
-    || (filter === "bookings" && ["reservation", "direct_reservation"].includes(entry.kind))
+    || (filter === "bookings" && ["reservation", "direct_reservation", "completed_early"].includes(entry.kind))
     || (filter === "blocks" && ["blocked", "unavailable", "unknown"].includes(entry.kind));
   const syncText = (property: CalendarProperty) => property.lastSyncStatus === "failure"
     ? "Sync error"
@@ -418,7 +482,17 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
       </section>
 
       <dialog className="entry-dialog" ref={editorDialog} onClose={() => { setEditor(null); setMessage(""); }}>
-        {editor ? <form onSubmit={submit}>
+        {editor?.entry?.kind === "completed_early" ? <section className="completed-entry">
+          <header><div><span>Completed early</span><h2>{editor.property.name}</h2></div><button type="button" className="icon-button" aria-label="Close entry editor" onClick={() => editorDialog.current?.close()}><X size={18} /></button></header>
+          <div className="completed-entry__details">
+            <div><span>Guest</span><strong>{editor.entry.privateBookingName || "Direct reservation"}</strong></div>
+            <div><span>Original stay</span><strong>{format(parseISO(editor.entry.startDate), "d MMM yyyy")} – {format(parseISO(editor.entry.endDate), "d MMM yyyy")}</strong></div>
+            <div><span>Actual checkout</span><strong>{editor.entry.completedEarlyAt ? formatInTimeZone(new Date(editor.entry.completedEarlyAt), "Asia/Kolkata", "d MMM yyyy, h:mm a") : "Recorded"}</strong></div>
+            <div><span>Airbnb release</span><strong>{editor.entry.releaseObservedOnAirbnb ? "Release observed on Airbnb" : "Released internally — awaiting Airbnb refresh"}</strong></div>
+          </div>
+          {editor.entry.sameDayTurnover ? <p className="turnover-note">Same-day turnover · second booking</p> : null}
+          <footer><span /><button className="button button--quiet" type="button" onClick={() => editorDialog.current?.close()}>Close</button></footer>
+        </section> : editor ? <form onSubmit={submit}>
           <header><div><span>{editor.entry?.source === "airbnb" ? "Airbnb source" : editor.entry ? "Local entry" : "New entry"}</span><h2>{editor.property.name}</h2></div><button type="button" className="icon-button" aria-label="Close entry editor" onClick={() => editorDialog.current?.close()}><X size={18} /></button></header>
           {message ? <div className="notice" role="status">{message}</div> : null}
           <div className="form-grid editor-fields">
@@ -433,7 +507,7 @@ export function CalendarWorkspace({ properties: initialProperties, startDate, an
           </div>
           {editor.entry?.source !== "airbnb" ? <div className="toggle-stack"><label className="toggle"><input name="syncToAirbnb" type="checkbox" defaultChecked={editor.entry?.syncToAirbnb} /><span />Block on Airbnb</label>{editor.entry?.syncToAirbnb ? <span className={`status ${editor.entry.airbnbObserved ? "status--safe" : "status--waiting"}`}>{editor.entry.airbnbObserved ? "Observed on Airbnb" : "Pending Airbnb refresh"}</span> : null}{overlap ? <label className="toggle toggle--warning"><input name="allowOverlap" type="checkbox" /><span />Confirm overlapping entry</label> : null}</div> : <p className="source-lock">Airbnb dates cannot be cancelled or made available here.</p>}
           {editor.entry?.reservationUrl ? <a className="source-link" href={editor.entry.reservationUrl} target="_blank" rel="noreferrer">Open Airbnb reservation <ExternalLink size={14} /></a> : null}
-          <footer>{editor.entry?.source === "local" ? <button className="button button--danger" type="button" disabled={Boolean(mutationPending)} onClick={() => archive(editor.entry!.id)}>{mutationPending === "archive" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "archive" ? "Archiving..." : "Archive"}</button> : <span /> }<button className="button button--primary" type="submit" disabled={Boolean(mutationPending)}>{mutationPending === "save" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "save" ? "Saving..." : "Save"}</button></footer>
+          <footer><div className="entry-dialog__actions">{editor.entry?.source === "local" ? <button className="button button--danger" type="button" disabled={Boolean(mutationPending)} onClick={() => archive(editor.entry!.id)}>{mutationPending === "archive" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "archive" ? "Archiving..." : "Archive"}</button> : null}{canCheckOutEarly(editor.entry) ? <button className="button button--warning" type="button" disabled={Boolean(mutationPending)} onClick={() => void checkOutEarly(editor.entry!)}>{mutationPending === "early_checkout" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "early_checkout" ? "Releasing room..." : "Check out early — release room now"}</button> : null}</div><button className="button button--primary" type="submit" disabled={Boolean(mutationPending)}>{mutationPending === "save" ? <RefreshCw className="spin" size={15} /> : null} {mutationPending === "save" ? "Saving..." : "Save"}</button></footer>
         </form> : null}
       </dialog>
 
