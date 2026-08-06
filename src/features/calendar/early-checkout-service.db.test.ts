@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { resetDb, testSql } from "@/test/db-test-client";
 import { createEntryService } from "./entry-service";
+import { createOutboundService } from "./outbound-service";
+import { hashToken } from "@/lib/security/secrets";
 import {
   createEarlyCheckoutService,
   EarlyCheckoutError,
@@ -109,6 +111,12 @@ describe("one-click early checkout", () => {
       "2026-08-16",
       "2026-08-17",
     ]);
+    const outboundToken = "b".repeat(48);
+    await testSql`
+      update public.listings set outbound_token_hash = ${hashToken(outboundToken)}
+      where id = ${listingId}
+    `;
+    expect(await createOutboundService(testSql).getOutboundCalendar(outboundToken)).toContain("BEGIN:VEVENT");
 
     const service = createEarlyCheckoutService(testSql, { now: () => NOW });
     const result = await service.completeEarly(created.id, USER_ID);
@@ -148,6 +156,7 @@ describe("one-click early checkout", () => {
       payment_amount: "2500.00",
     });
     expect(await activeInventory(created.id)).toEqual([]);
+    expect(await createOutboundService(testSql).getOutboundCalendar(outboundToken)).not.toContain("BEGIN:VEVENT");
     const [audit] = await testSql<{ action: string; changes: Record<string, unknown> }[]>`
       select action, changes from public.audit_log
       where entity_id = ${created.id} and action = 'completed_early'

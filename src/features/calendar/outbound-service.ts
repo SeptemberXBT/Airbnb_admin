@@ -1,24 +1,32 @@
 import "server-only";
+import type postgres from "postgres";
 import { getDb } from "@/lib/db/client";
 import { generateOutboundCalendar } from "@/lib/ical/outbound";
 import { generatePublicToken, hashToken } from "@/lib/security/secrets";
 
+export function createOutboundService(sql: postgres.Sql) {
+  return {
+    async getOutboundCalendar(routeToken: string) {
+      const [listing] = await sql<{ id: string; property_id: string }[]>`
+        select id, property_id from public.listings
+        where outbound_token_hash = ${hashToken(routeToken)} and outbound_enabled and active and archived_at is null
+      `;
+      if (!listing) return null;
+      const entries = await sql<{ id: string; start_date: string; end_date: string }[]>`
+        select id, start_date::text, end_date::text from public.local_calendar_entries
+        where property_id = ${listing.property_id} and active and archived_at is null and sync_to_airbnb
+          and (listing_id is null or listing_id = ${listing.id})
+        order by start_date, end_date, id
+      `;
+      return generateOutboundCalendar(entries.map((entry) => ({
+        id: entry.id, startDate: entry.start_date, endDate: entry.end_date,
+      })), routeToken);
+    },
+  };
+}
+
 export async function getOutboundCalendar(routeToken: string) {
-  const sql = getDb();
-  const [listing] = await sql<{ id: string; property_id: string }[]>`
-    select id, property_id from public.listings
-    where outbound_token_hash = ${hashToken(routeToken)} and outbound_enabled and active and archived_at is null
-  `;
-  if (!listing) return null;
-  const entries = await sql<{ id: string; start_date: string; end_date: string }[]>`
-    select id, start_date::text, end_date::text from public.local_calendar_entries
-    where property_id = ${listing.property_id} and active and archived_at is null and sync_to_airbnb
-      and (listing_id is null or listing_id = ${listing.id})
-    order by start_date, end_date, id
-  `;
-  return generateOutboundCalendar(entries.map((entry) => ({
-    id: entry.id, startDate: entry.start_date, endDate: entry.end_date,
-  })), routeToken);
+  return createOutboundService(getDb()).getOutboundCalendar(routeToken);
 }
 
 async function assertListingAccess(listingId: string, userId: string) {

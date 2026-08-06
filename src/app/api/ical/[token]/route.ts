@@ -12,7 +12,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
     headers: {
       "content-type": "text/calendar; charset=utf-8",
       "content-disposition": "inline; filename=haven-busy-dates.ics",
-      "cache-control": "public, max-age=60, s-maxage=300, stale-while-revalidate=60",
+      "cache-control": "no-store, max-age=0",
       "x-content-type-options": "nosniff",
       "x-robots-tag": "noindex, nofollow, noarchive",
     },
